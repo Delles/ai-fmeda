@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback } from 'react';
 import {
   createColumnHelper,
   flexRender,
@@ -12,20 +12,22 @@ import {
   Trash2,
   Plus,
   Download,
-  Upload,
   ChevronDown,
   ChevronRight,
-  PlusCircle,
   ChevronsRight,
   Layers,
   Box,
   Cpu,
   Activity,
   AlertTriangle,
+  FileJson,
+  FileCode,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { FmedaNode, FmedaNodeType } from '../types/fmeda';
 import { useFmedaStore } from '../store/fmedaStore';
-import { exportToJson, importFromJson } from '../utils/export';
+import { exportToJson } from '../utils/export';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { EditableTextCell } from './cells/EditableTextCell';
 import { EditableNumberCell } from './cells/EditableNumberCell';
 import { EditableAICell } from './cells/EditableAICell';
@@ -33,34 +35,46 @@ import { DocumentUpload } from './DocumentUpload';
 import { useConfirm } from '../hooks/useConfirm';
 import { generateId } from '../utils/id';
 import { cn } from '../lib/utils';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from './ui/context-menu';
 
-const columnHelper = createColumnHelper<FmedaNode>();
+const columnHelper = createColumnHelper<FmedaNode & { isPlaceholder?: boolean }>();
 
 // FIX #6 & #3: Node type icon for table rows + breadcrumb
-const NODE_TYPE_CONFIG: Record<FmedaNodeType, { icon: React.ReactNode; rowClass: string; label: string }> = {
+const NODE_TYPE_CONFIG: Record<FmedaNodeType, { icon: React.ReactNode; rowClass: string; label: string; accentClass: string }> = {
   System: {
-    icon: <Layers className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />,
-    rowClass: 'bg-blue-50/60 text-blue-900 border-b border-blue-100',
+    icon: <Layers className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />,
+    rowClass: 'bg-blue-50/80 text-blue-900 border-b border-blue-100 font-semibold',
+    accentClass: 'bg-blue-600',
     label: 'System',
   },
   Subsystem: {
-    icon: <Box className="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />,
-    rowClass: 'bg-indigo-50/40 text-indigo-900 border-b border-indigo-100',
+    icon: <Box className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />,
+    rowClass: 'bg-indigo-50/60 text-indigo-900 border-b border-indigo-100 font-medium',
+    accentClass: 'bg-indigo-500',
     label: 'Subsystem',
   },
   Component: {
-    icon: <Cpu className="w-3.5 h-3.5 text-purple-500 flex-shrink-0" />,
-    rowClass: 'bg-purple-50/30 text-purple-900 border-b border-purple-100',
+    icon: <Cpu className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" />,
+    rowClass: 'bg-purple-50/40 text-purple-900 border-b border-purple-100 font-medium',
+    accentClass: 'bg-purple-400',
     label: 'Component',
   },
   Function: {
-    icon: <Activity className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />,
+    icon: <Activity className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />,
     rowClass: 'bg-emerald-50/30 text-emerald-900 border-b border-emerald-100',
+    accentClass: 'bg-emerald-400',
     label: 'Function',
   },
   FailureMode: {
     icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />,
     rowClass: 'bg-white text-gray-700 border-b border-gray-100',
+    accentClass: 'bg-gray-200',
     label: 'Failure Mode',
   },
 };
@@ -116,51 +130,55 @@ const HierarchyBreadcrumb: React.FC<{ selectedId: string | null }> = ({ selected
   );
 };
 
+const getNextNodeType = (currentType: FmedaNodeType): FmedaNodeType | null => {
+  switch (currentType) {
+    case 'System': return 'Subsystem';
+    case 'Subsystem': return 'Component';
+    case 'Component': return 'Function';
+    case 'Function': return 'FailureMode';
+    case 'FailureMode': return null;
+    default: return null;
+  }
+};
+
 export const FmedaTable: React.FC = () => {
-  const { 
+  const {
     nodes,
     selectedId,
-    setNodes,
     updateNode,
     deleteNode,
     addNode,
     setSelectedId
   } = useFmedaStore();
-  
+
   const tableData = useMemo(() => {
     if (!selectedId) {
       return Object.values(nodes).filter(n => !n.parentId);
     }
-    
+
     const selectedNode = nodes[selectedId];
     if (!selectedNode) return [];
-    
-    return selectedNode.childIds.map(id => nodes[id]).filter(Boolean);
+
+    const children = selectedNode.childIds.map(id => nodes[id]).filter(Boolean) as (FmedaNode & { isPlaceholder?: boolean })[];
+    const nextType = getNextNodeType(selectedNode.type);
+    if (nextType) {
+      children.push({
+        id: `placeholder-${selectedNode.id}`,
+        name: `Add ${nextType}...`,
+        type: nextType,
+        parentId: selectedNode.id,
+        childIds: [],
+        isPlaceholder: true,
+      } as FmedaNode & { isPlaceholder?: boolean });
+    }
+    return children;
   }, [nodes, selectedId]);
-  
+
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<ExpandedState>({});
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExport = () => {
-    exportToJson(Object.values(nodes));
-  };
-
-  const handleImportClick = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      try {
-        const nodesRecord = await importFromJson(file);
-        setNodes(nodesRecord);
-        e.target.value = '';
-      } catch (error: any) {
-        alert(`Import failed: ${error.message}`);
-      }
-    }
+    exportToJson(Object.values(nodes), useFmedaStore.getState().projectContext);
   };
 
   const handleDelete = async (row: Row<FmedaNode>) => {
@@ -171,27 +189,15 @@ export const FmedaTable: React.FC = () => {
       variant: 'destructive',
       confirmText: 'Delete'
     });
-    
+
     if (isConfirmed) {
       deleteNode(original.id);
     }
   };
 
-  const getNextNodeType = (currentType: FmedaNodeType): FmedaNodeType | null => {
-    switch (currentType) {
-      case 'System': return 'Subsystem';
-      case 'Subsystem': return 'Component';
-      case 'Component': return 'Function';
-      case 'Function': return 'FailureMode';
-      case 'FailureMode': return null;
-      default: return null;
-    }
-  };
-
-  const handleAddChild = (row: Row<FmedaNode>) => {
-    const parent = row.original;
+  const handleAddChild = (parent: FmedaNode) => {
     const nextType = getNextNodeType(parent.type);
-    
+
     if (nextType) {
       const newNode: FmedaNode = {
         id: generateId(),
@@ -210,23 +216,12 @@ export const FmedaTable: React.FC = () => {
       addNode(newNode);
       setExpanded(prev => {
         if (prev === true) return true;
-        return { ...prev, [row.id]: true };
+        return { ...prev, [parent.id]: true };
       });
     }
   };
 
-  const handleAddRoot = () => {
-    const newNode: FmedaNode = {
-      id: generateId(),
-      name: 'New System',
-      type: 'System',
-      parentId: null,
-      childIds: [],
-    };
-    addNode(newNode);
-  };
-
-  const getAiContext = (row: Row<FmedaNode>) => {
+  const getAiContext = (row: Row<FmedaNode & { isPlaceholder?: boolean }>) => {
     let systemName = '';
     let subsystemName = '';
     let componentName = '';
@@ -245,7 +240,7 @@ export const FmedaTable: React.FC = () => {
     return { systemName, subsystemName, componentName, functionName, failureMode };
   };
 
-  const handleCellSave = (row: Row<FmedaNode>, field: string, value: any) => {
+  const handleCellSave = (row: Row<FmedaNode & { isPlaceholder?: boolean }>, field: string, value: any) => {
     updateNode(row.original.id, { [field]: value });
   };
 
@@ -255,7 +250,7 @@ export const FmedaTable: React.FC = () => {
         id: 'name',
         header: 'Hierarchy / Name',
         cell: ({ row, getValue }) => (
-          <div 
+          <div
             className="flex items-center gap-2"
             style={{ paddingLeft: `${row.depth * 1.25}rem` }}
           >
@@ -332,7 +327,7 @@ export const FmedaTable: React.FC = () => {
           const value = row.original.type !== 'FailureMode' ? row.original.avgDc || 0 : getValue();
           const numValue = typeof value === 'number' ? value : 0;
           const percentage = numValue * 100;
-          
+
           let colorClass = "text-gray-500 bg-gray-50 border-gray-200";
           if (percentage < 60) colorClass = "text-red-700 bg-red-50 border-red-200";
           else if (percentage < 90) colorClass = "text-amber-700 bg-amber-50 border-amber-200";
@@ -345,7 +340,7 @@ export const FmedaTable: React.FC = () => {
               </div>
             );
           }
-          
+
           return (
             <div className="flex items-center gap-2">
               <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
@@ -370,7 +365,7 @@ export const FmedaTable: React.FC = () => {
         cell: ({ row, getValue }) => {
           const value = row.original.type !== 'FailureMode' ? row.original.totalFit || 0 : getValue();
           const numValue = typeof value === 'number' ? value : 0;
-          
+
           // FIX #9-related: Use consistent border colors
           let colorClass = "text-gray-500 bg-gray-50 border-gray-200";
           if (numValue > 100) colorClass = "text-red-700 bg-red-50 border-red-200";
@@ -383,7 +378,7 @@ export const FmedaTable: React.FC = () => {
               </div>
             );
           }
-          
+
           return (
             <EditableNumberCell
               initialValue={numValue}
@@ -403,7 +398,7 @@ export const FmedaTable: React.FC = () => {
           <div className="flex items-center gap-1 justify-end">
             {getNextNodeType(info.row.original.type) && (
               <button
-                onClick={() => handleAddChild(info.row)}
+                onClick={() => handleAddChild(info.row.original)}
                 className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
                 title={`Add ${getNextNodeType(info.row.original.type)}`}
               >
@@ -419,7 +414,7 @@ export const FmedaTable: React.FC = () => {
               <ChevronsRight size={15} />
             </button>
             <button
-              onClick={() => handleDelete(info.row)}
+              onClick={() => handleDelete(info.row as any)}
               className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"
               title="Delete"
             >
@@ -440,7 +435,19 @@ export const FmedaTable: React.FC = () => {
     },
     onExpandedChange: setExpanded,
     getSubRows: (row) => {
-      return row.childIds.map(id => nodes[id]).filter(Boolean);
+      const children = row.childIds.map(id => nodes[id]).filter(Boolean) as (FmedaNode & { isPlaceholder?: boolean })[];
+      const nextType = getNextNodeType(row.type);
+      if (nextType) {
+        children.push({
+          id: `placeholder-${row.id}`,
+          name: `Add ${nextType}...`,
+          type: nextType,
+          parentId: row.id,
+          childIds: [],
+          isPlaceholder: true,
+        } as FmedaNode & { isPlaceholder?: boolean });
+      }
+      return children;
     },
     getCoreRowModel: getCoreRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
@@ -488,7 +495,7 @@ export const FmedaTable: React.FC = () => {
 
   // FIX #14: Context-aware empty state message
   const getEmptyStateMessage = () => {
-    if (!selectedId) return { title: 'No FMEDA data yet', sub: 'Click "Add System" to get started.' };
+    if (!selectedId) return { title: 'No FMEDA data yet', sub: 'Please go back to the Dashboard to create or import a project.' };
     const sel = nodes[selectedId];
     if (!sel) return { title: 'Nothing here', sub: 'No children found.' };
     const nextType = getNextNodeType(sel.type);
@@ -522,7 +529,7 @@ export const FmedaTable: React.FC = () => {
   return (
     <div className="space-y-0">
       {/* ── Page Header Section ── */}
-      <div className="pb-3 mb-3 border-b border-gray-100">
+      <div className="pb-3 mb-3 border-b border-gray-100 sticky top-0 z-30 bg-white/95 backdrop-blur-sm pt-2 -mt-2">
         {/* Row 1: Title + KPI Badges */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
@@ -585,56 +592,63 @@ export const FmedaTable: React.FC = () => {
 
           <div className="w-px h-5 bg-gray-200 mx-0.5" />
 
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-1.5 text-gray-600 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-xs font-medium"
-            title="Export to JSON"
-          >
-            <Download size={14} />
-            <span>Export</span>
-          </button>
-          <button
-            onClick={handleImportClick}
-            className="flex items-center gap-1.5 text-gray-600 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-xs font-medium"
-            title="Import from JSON"
-          >
-            <Upload size={14} />
-            <span>Import</span>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept=".json"
-              className="hidden"
-            />
-          </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                className="flex items-center gap-1.5 text-gray-600 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                title="Save As"
+              >
+                <Download size={14} />
+                <span>Save As</span>
+                <ChevronDown size={14} className="text-gray-400" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-52 p-1.5 border border-gray-200 shadow-lg rounded-xl">
+              <div className="flex flex-col gap-0.5">
+                <button
+                  onClick={handleExport}
+                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-blue-50 hover:text-blue-700 rounded-lg transition-colors text-left"
+                >
+                  <FileJson size={16} className="text-blue-500 shrink-0" />
+                  <span>JSON File</span>
+                </button>
+                <button
+                  disabled
+                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-400 cursor-not-allowed rounded-lg text-left"
+                  title="Coming Soon"
+                >
+                  <FileCode size={16} className="shrink-0" />
+                  <span>XML File (Soon)</span>
+                </button>
+                <button
+                  disabled
+                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-400 cursor-not-allowed rounded-lg text-left"
+                  title="Coming Soon"
+                >
+                  <FileSpreadsheet size={16} className="shrink-0" />
+                  <span>CSV / Excel (Soon)</span>
+                </button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
-
-        {/* Right: Primary Action */}
-        <button
-          onClick={handleAddRoot}
-          className="flex items-center gap-1.5 bg-blue-600 text-white px-3.5 py-1.5 rounded-md hover:bg-blue-700 shadow-sm transition-all text-sm font-medium hover:shadow"
-        >
-          <PlusCircle size={15} />
-          Add System
-        </button>
       </div>
 
       {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
       <div className="overflow-x-auto border border-gray-200 rounded-lg shadow-sm">
         <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50 border-b border-gray-200">
+          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
             {table.getHeaderGroups().map((headerGroup) => (
               <tr key={headerGroup.id}>
                 {headerGroup.headers.map((header, i) => (
                   <th
                     key={header.id}
                     className={cn(
-                      "px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider",
-                      i === 0 ? "min-w-[220px]" : "",
-                      i === 1 || i === 2 ? "min-w-[200px]" : "",
-                      i === 3 || i === 4 ? "min-w-[100px]" : "",
-                      i === 5 ? "w-[100px]" : "",
+                      "px-2 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider",
+                      i === 0 ? "w-[25%]" : "",
+                      i === 1 || i === 2 ? "w-[22%]" : "",
+                      i === 3 || i === 4 ? "w-[10%]" : "",
+                      i === 5 ? "w-[11%]" : "",
                     )}
                   >
                     {header.isPlaceholder
@@ -648,26 +662,87 @@ export const FmedaTable: React.FC = () => {
           <tbody className="bg-white divide-y divide-gray-100" onKeyDown={handleTableKeyDown}>
             {table.getRowModel().rows.length > 0 ? (
               table.getRowModel().rows.map((row, rowIndex) => {
+                const isPlaceholder = row.original.id.startsWith('placeholder-');
+
+                if (isPlaceholder) {
+                  const typeConfig = NODE_TYPE_CONFIG[row.original.type];
+
+                  return (
+                    <tr
+                      key={row.id}
+                      className="transition-all border-b border-gray-100 bg-gray-50/20"
+                    >
+                      <td
+                        colSpan={6}
+                        className={cn(
+                          "px-2 py-2 text-sm",
+                          typeConfig && "border-l-[4px]",
+                          typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-')
+                        )}
+                      >
+                        <button
+                          onClick={() => {
+                            const parent = row.original.parentId ? nodes[row.original.parentId] : null;
+                            if (parent) handleAddChild(parent);
+                          }}
+                          className="flex items-center gap-2 text-blue-500/80 hover:text-blue-700 font-medium transition-all px-3 py-2 rounded-md hover:bg-white w-[85%] text-left border border-blue-50 hover:border-blue-200 hover:shadow-sm"
+                          style={{ marginLeft: `${row.depth * 1.25 + 1.25}rem` }}
+                        >
+                          <Plus size={15} className="shrink-0" />
+                          <span className="italic">{row.original.name}</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }
+
                 // FIX #6: Color by node type, not by depth
                 const typeConfig = NODE_TYPE_CONFIG[row.original.type];
                 const rowClass = typeConfig.rowClass;
 
                 return (
-                  <tr 
-                    key={row.id} 
-                    className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
-                  >
-                    {row.getVisibleCells().map((cell, colIndex) => (
-                      <td 
-                        key={cell.id} 
-                        className="px-4 py-3 whitespace-normal text-sm relative"
-                        data-row-index={rowIndex}
-                        data-col-index={colIndex}
+                  <ContextMenu key={row.id}>
+                    <ContextMenuTrigger asChild>
+                      <tr
+                        className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
                       >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
+                        {row.getVisibleCells().map((cell, colIndex) => (
+                          <td
+                            key={cell.id}
+                            className={cn(
+                              "px-2 py-3 whitespace-normal text-sm relative group/cell",
+                              colIndex === 0 && "border-l-[4px]",
+                              colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
+                            )}
+                            data-row-index={rowIndex}
+                            data-col-index={colIndex}
+                          >
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                          </td>
+                        ))}
+                      </tr>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="w-48">
+                      {getNextNodeType(row.original.type) && (
+                        <ContextMenuItem onClick={() => handleAddChild(row.original)}>
+                          <Plus size={14} className="mr-2 text-emerald-600" />
+                          Add {getNextNodeType(row.original.type)}
+                        </ContextMenuItem>
+                      )}
+                      <ContextMenuItem onClick={() => setSelectedId(row.original.id)}>
+                        <ChevronsRight size={14} className="mr-2 text-blue-600" />
+                        Drill Down
+                      </ContextMenuItem>
+                      <ContextMenuSeparator />
+                      <ContextMenuItem
+                        onClick={() => handleDelete(row as any)}
+                        className="text-red-600 focus:bg-red-50 focus:text-red-700"
+                      >
+                        <Trash2 size={14} className="mr-2" />
+                        Delete
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
                 );
               })
             ) : (

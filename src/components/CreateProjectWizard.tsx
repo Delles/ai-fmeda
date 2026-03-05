@@ -31,7 +31,7 @@ const INITIAL_STATE: WizardState = {
 };
 
 interface CreateProjectWizardProps {
-  onComplete: (architecture: FmedaSystemDeep[]) => void;
+  onComplete: (architecture: FmedaSystemDeep[], context: WizardState) => void;
   onCancel: () => void;
 }
 
@@ -123,7 +123,7 @@ export const CreateProjectWizard: React.FC<CreateProjectWizardProps> = ({ onComp
   const handleFinish = (confirmMessage?: string) => {
     const doFinish = () => {
       clearProgress();
-      onComplete(state.architecture);
+      onComplete(state.architecture, state);
     };
 
     if (confirmMessage) {
@@ -265,7 +265,7 @@ export const CreateProjectWizard: React.FC<CreateProjectWizardProps> = ({ onComp
           <AlertDialogHeader>
             <AlertDialogTitle>Resume Previous Wizard?</AlertDialogTitle>
             <AlertDialogDescription>
-              You have a saved wizard session for project "<strong>{state.projectName || 'Untitled'}</strong>" 
+              You have a saved wizard session for project "<strong>{state.projectName || 'Untitled'}</strong>"
               (Step {state.currentStep}).
               Would you like to continue where you left off?
             </AlertDialogDescription>

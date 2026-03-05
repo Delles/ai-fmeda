@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { FmedaNode } from '../types/fmeda';
+import { FmedaNode, ProjectContext } from '../types/fmeda';
 import { recalculateAllTotals } from '../utils/calculations';
 
 /**
@@ -10,11 +10,17 @@ export interface FmedaState {
   /** Flat map of all nodes in the FMEDA hierarchy indexed by ID */
   nodes: Record<string, FmedaNode>;
 
+  /** Optional context about the project parsed from the AI wizard */
+  projectContext: ProjectContext | null;
+
   /** The ID of the currently selected node for editing */
   selectedId: string | null;
 
   /** Sets the entire nodes map (useful for migration and imports) */
   setNodes: (nodes: Record<string, FmedaNode>) => void;
+
+  /** Sets the project context */
+  setProjectContext: (context: ProjectContext | null) => void;
 
   /** Sets the currently selected node ID */
   setSelectedId: (id: string | null) => void;
@@ -40,17 +46,17 @@ export interface FmedaState {
  */
 const getAllDescendantIds = (nodes: Record<string, FmedaNode>, id: string): string[] => {
   const descendants: string[] = [];
-  
+
   const traverse = (currentId: string) => {
     const node = nodes[currentId];
     if (!node) return;
-    
+
     for (const childId of node.childIds) {
       descendants.push(childId);
       traverse(childId);
     }
   };
-  
+
   traverse(id);
   return descendants;
 };
@@ -63,16 +69,19 @@ export const useFmedaStore = create<FmedaState>()(
   persist(
     (set) => ({
       nodes: {},
+      projectContext: null,
       selectedId: null,
 
       setNodes: (nodes) => set({ nodes: recalculateAllTotals(nodes) }),
+
+      setProjectContext: (context) => set({ projectContext: context }),
 
       setSelectedId: (id) => set({ selectedId: id }),
 
       addNode: (node) =>
         set((state) => {
           const newNodes = { ...state.nodes, [node.id]: node };
-          
+
           // If the node has a parent, update the parent's childIds
           if (node.parentId && newNodes[node.parentId]) {
             newNodes[node.parentId] = {
@@ -80,14 +89,14 @@ export const useFmedaStore = create<FmedaState>()(
               childIds: [...newNodes[node.parentId].childIds, node.id],
             };
           }
-          
+
           return { nodes: recalculateAllTotals(newNodes) };
         }),
 
       updateNode: (id, updates) =>
         set((state) => {
           if (!state.nodes[id]) return state;
-          
+
           const newNodes = {
             ...state.nodes,
             [id]: { ...state.nodes[id], ...updates },
@@ -103,9 +112,9 @@ export const useFmedaStore = create<FmedaState>()(
 
           const descendantIds = getAllDescendantIds(state.nodes, id);
           const idsToRemove = [id, ...descendantIds];
-          
+
           const newNodes = { ...state.nodes };
-          
+
           // Remove from parent's childIds
           if (nodeToDelete.parentId && newNodes[nodeToDelete.parentId]) {
             newNodes[nodeToDelete.parentId] = {
@@ -113,12 +122,12 @@ export const useFmedaStore = create<FmedaState>()(
               childIds: newNodes[nodeToDelete.parentId].childIds.filter((cid) => cid !== id),
             };
           }
-          
+
           // Delete the node and all descendants
           idsToRemove.forEach((removeId) => {
             delete newNodes[removeId];
           });
-          
+
           return { nodes: recalculateAllTotals(newNodes) };
         }),
 

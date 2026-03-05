@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { Pencil } from 'lucide-react';
 
 export interface EditableNumberCellProps {
   initialValue: number;
@@ -83,9 +84,12 @@ export const EditableNumberCell: React.FC<EditableNumberCellProps> = ({
     <button
       type="button"
       onClick={() => setIsEditing(true)}
-      className={`text-left w-full cursor-pointer hover:bg-gray-100 px-2 py-1 rounded block min-h-[1.5rem] ${className}`}
+      className={`group relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] border border-transparent hover:border-gray-200 hover:shadow-sm transition-all pr-6 ${className}`}
     >
       {displayValue}
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+        <Pencil className="w-3 h-3 text-gray-400" />
+      </div>
     </button>
   );
 };

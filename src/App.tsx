@@ -11,12 +11,10 @@ import { SidebarRight } from './components/SidebarRight';
 import { isLegacyFormat, migrateLegacyToFlat, flattenDeepHierarchy } from './utils/migration';
 
 function App() {
-  const { nodes, setNodes } = useFmedaStore();
+  const { nodes, setNodes, setProjectContext } = useFmedaStore();
   const nodeCount = Object.keys(nodes).length;
-  
-  const [currentView, setCurrentView] = useState<'home' | 'wizard' | 'table'>(
-    nodeCount > 0 ? 'table' : 'home'
-  );
+
+  const [currentView, setCurrentView] = useState<'home' | 'wizard' | 'table'>('home');
 
   // Handle migration of legacy data if present
   useEffect(() => {
@@ -36,36 +34,32 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (nodeCount > 0 && currentView === 'home') {
-      setCurrentView('table');
-    }
-  }, [nodeCount]);
+  // Removed automatic routing to 'table' on startup to show the Home dashboard first
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       <GlobalConfirmDialog />
-      
+
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm z-10">
         <div className="flex items-center space-x-4">
-          <h1 
+          <h1
             className="text-xl font-bold text-blue-600 cursor-pointer flex items-center"
             onClick={() => setCurrentView(nodeCount > 0 ? 'table' : 'home')}
           >
             <Layout className="mr-2 w-6 h-6" />
             FMEDA Pro
           </h1>
-          
+
           {nodeCount > 0 && (
             <nav className="flex items-center bg-gray-100 rounded-lg p-1 ml-8">
               <button
                 onClick={() => setCurrentView('table')}
                 className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center ${
-                  currentView === 'table' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
+                  currentView === 'table'
+                    ? 'bg-white text-blue-600 shadow-sm'
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -75,8 +69,8 @@ function App() {
               <button
                 onClick={() => setCurrentView('home')}
                 className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all flex items-center ${
-                  currentView === 'home' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
+                  currentView === 'home'
+                    ? 'bg-white text-blue-600 shadow-sm'
                     : 'text-gray-500 hover:text-gray-700'
                 }`}
               >
@@ -103,9 +97,9 @@ function App() {
         {currentView === 'home' && (
           <main className="flex-1 overflow-y-auto p-8">
             <div className="max-w-5xl mx-auto">
-              <Home 
-                onNewProject={() => setCurrentView('wizard')} 
-                onImportSuccess={() => setCurrentView('table')} 
+              <Home
+                onNewProject={() => setCurrentView('wizard')}
+                onImportSuccess={() => setCurrentView('table')}
               />
             </div>
           </main>
@@ -114,13 +108,23 @@ function App() {
         {currentView === 'wizard' && (
           <main className="flex-1 overflow-y-auto p-8">
             <div className="max-w-4xl mx-auto">
-              <CreateProjectWizard 
-                onComplete={(migratedNodes) => {
+              <CreateProjectWizard
+                onComplete={(migratedNodes, context) => {
                   if (isLegacyFormat(migratedNodes)) {
                     setNodes(migrateLegacyToFlat(migratedNodes));
                   } else {
                     setNodes(flattenDeepHierarchy(migratedNodes as any));
                   }
+
+                  // Save the context
+                  setProjectContext({
+                    projectName: context.projectName,
+                    safetyStandard: context.safetyStandard,
+                    targetAsil: context.targetAsil,
+                    safetyGoal: context.safetyGoal,
+                    documentText: context.documentText,
+                  });
+
                   setCurrentView('table');
                 }}
                 onCancel={() => setCurrentView('home')}
@@ -132,7 +136,7 @@ function App() {
         {currentView === 'table' && (
           <>
             <SidebarLeft />
-            
+
             <main className="flex-1 flex flex-col min-w-0 bg-white overflow-hidden">
               <div className="flex-1 overflow-auto p-6">
                 <FmedaTable />

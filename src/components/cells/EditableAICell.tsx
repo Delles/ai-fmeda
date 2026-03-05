@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Sparkles, Loader2 } from 'lucide-react';
+import { Sparkles, Loader2, Pencil } from 'lucide-react';
 import { AISuggestionContext, getAISuggestions } from '../../services/aiService';
 import { useAIStore } from '../../store/aiStore';
 import { useDocumentStore } from '../../store/documentStore';
@@ -34,12 +34,12 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [value, setValue] = useState(initialValue || '');
   const [isHovered, setIsHovered] = useState(false);
-  
+
   // AI State
   const [isAILoading, setIsAILoading] = useState(false);
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  
+
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
   const { config } = useAIStore();
@@ -116,7 +116,7 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
   const handleAISuggest = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    
+
     if (!config.apiKey) {
       alert('Please configure your AI API key in settings first.');
       return;
@@ -155,7 +155,7 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
       type="button"
       onMouseDown={handleAISuggest}
       disabled={isAILoading}
-      className={`${absolute ? 'absolute right-1 top-1/2 -translate-y-1/2' : ''} p-1 rounded-md text-blue-500 hover:bg-blue-100 transition-colors ${isAILoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+      className={`${absolute ? 'absolute right-6 top-1/2 -translate-y-1/2' : ''} p-1 rounded-md text-blue-500 hover:bg-blue-100 transition-colors ${isAILoading ? 'opacity-50 cursor-not-allowed' : ''} z-10`}
       title="Get AI Suggestions"
       tabIndex={-1}
     >
@@ -165,7 +165,7 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
 
   return (
     <Popover open={isOpen} onOpenChange={handleOpenChange}>
-      <div 
+      <div
         className="relative w-full group"
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
@@ -173,16 +173,19 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className={`text-left w-full cursor-pointer hover:bg-gray-100 px-2 py-1 rounded block min-h-[1.5rem] pr-8 ${!value ? 'text-gray-400 italic' : ''} ${className}`}
+            className={`group/btn relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] pr-8 border border-transparent hover:border-gray-200 hover:shadow-sm transition-all ${!value ? 'text-gray-400 italic' : ''} ${className}`}
           >
             {value || placeholder}
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none">
+              <Pencil className="w-3 h-3 text-gray-400 hidden group-hover/btn:block" />
+            </div>
           </button>
         </PopoverTrigger>
         {!isOpen && (isHovered || !value) && renderAIButton(true)}
       </div>
 
-      <PopoverContent 
-        className="w-[32rem] p-3 flex flex-col gap-2" 
+      <PopoverContent
+        className="w-[32rem] p-3 flex flex-col gap-2"
         align="start"
         collisionPadding={16}
         style={{ maxHeight: 'var(--radix-popover-content-available-height)' }}
@@ -212,9 +215,9 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
             />
           )}
           {renderAIButton(true)}
-          
+
           {showSuggestions && (
-            <div 
+            <div
               className="absolute z-50 left-0 top-full mt-1 w-full max-w-[90vw]"
               onMouseDown={(e) => e.preventDefault()}
             >

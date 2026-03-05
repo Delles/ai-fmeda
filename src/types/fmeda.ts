@@ -4,6 +4,17 @@
 export type FmedaNodeType = 'System' | 'Subsystem' | 'Component' | 'Function' | 'FailureMode';
 
 /**
+ * Contextual metadata about the project, gathered during wizard initialization
+ */
+export interface ProjectContext {
+  projectName?: string;
+  safetyStandard?: string;
+  targetAsil?: string;
+  safetyGoal?: string;
+  documentText?: string;
+}
+
+/**
  * Normalized node in the FMEDA data structure.
  * Supports System, Subsystem, Component, Function, and FailureMode types.
  */

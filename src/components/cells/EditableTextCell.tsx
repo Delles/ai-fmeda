@@ -4,6 +4,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '../ui/popover';
+import { Pencil } from 'lucide-react';
 
 export interface EditableTextCellProps {
   initialValue: string;
@@ -93,13 +94,16 @@ export const EditableTextCell: React.FC<EditableTextCellProps> = ({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={`text-left w-full cursor-pointer hover:bg-gray-100 px-2 py-1 rounded block min-h-[1.5rem] ${!value ? 'text-gray-400 italic' : ''} ${className}`}
+          className={`group relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] border border-transparent hover:border-gray-200 hover:shadow-sm transition-all ${!value ? 'text-gray-400 italic' : ''} ${className}`}
         >
           {value || placeholder}
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <Pencil className="w-3 h-3 text-gray-400" />
+          </div>
         </button>
       </PopoverTrigger>
-      <PopoverContent 
-        className="w-[32rem] p-3 flex flex-col gap-2" 
+      <PopoverContent
+        className="w-[32rem] p-3 flex flex-col gap-2"
         align="start"
         collisionPadding={16}
         style={{ maxHeight: 'var(--radix-popover-content-available-height)' }}

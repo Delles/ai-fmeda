@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { FilePlus, Upload } from 'lucide-react';
+import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target } from 'lucide-react';
 import { useFmedaStore } from '../store/fmedaStore';
 import { importFromJson } from '../utils/export';
 
@@ -9,8 +9,15 @@ interface HomeProps {
 }
 
 export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => {
-  const { setNodes } = useFmedaStore();
+  const { nodes, setNodes, projectContext } = useFmedaStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const nodesList = Object.values(nodes);
+  const hasProject = nodesList.length > 0;
+
+  const componentsCount = nodesList.filter(n => n.type === 'Component').length;
+  const functionsCount = nodesList.filter(n => n.type === 'Function').length;
+  const failureModesCount = nodesList.filter(n => n.type === 'FailureMode').length;
 
   const handleImportClick = () => {
     fileInputRef.current?.click();
@@ -20,52 +27,139 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
     const file = e.target.files?.[0];
     if (file) {
       try {
-        const nodesRecord = await importFromJson(file);
-        setNodes(nodesRecord);
+        const result = await importFromJson(file);
+        setNodes(result.nodes);
+        useFmedaStore.getState().setProjectContext(result.projectContext);
         onImportSuccess();
       } catch (error: any) {
         alert(`Import failed: ${error.message}`);
       } finally {
-        // Reset file input
         e.target.value = '';
       }
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center">
-      <h2 className="text-3xl font-bold text-gray-900 mb-4">Welcome to FMEDA MVP</h2>
-      <p className="text-lg text-gray-600 mb-12 max-w-2xl">
-        Start a new Failure Modes, Effects, and Diagnostic Analysis project or import an existing one to continue your work.
-      </p>
+    <div className="flex flex-col items-center justify-center min-h-[70vh] text-center max-w-5xl mx-auto py-12">
+      <h2 className="text-3xl md:text-4xl font-extrabold text-gray-900 mb-10 tracking-tight">
+        FMEDA AI Analysis <span className="text-blue-600">Demo</span>
+      </h2>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full max-w-4xl">
+
+      {hasProject && (
+        <div className="w-full mb-10 text-left">
+          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3 ml-2">Resume Session</h3>
+          <div className="bg-white border-2 border-blue-100 rounded-2xl shadow-sm overflow-hidden transition-all hover:shadow-md hover:border-blue-300">
+            <div className="bg-gradient-to-r from-slate-50 to-blue-50/50 border-b border-gray-100 px-6 py-4 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center">
+                <FolderOpen className="w-5 h-5 mr-3 text-blue-600" />
+                {projectContext?.projectName || 'Current Active Project'}
+              </h3>
+              <span className="text-xs font-bold bg-white text-blue-700 px-3 py-1 rounded-full border border-blue-200 shadow-sm">Local Storage Saved</span>
+            </div>
+
+            <div className="p-6">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4">
+                <div className="flex gap-10 mb-6 md:mb-0">
+                  <div className="flex flex-col">
+                    <span className="text-4xl font-extrabold text-slate-800">{componentsCount}</span>
+                    <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Components</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-4xl font-extrabold text-slate-800">{functionsCount}</span>
+                    <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Functions</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-4xl font-extrabold text-slate-800">{failureModesCount}</span>
+                    <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Failure Modes</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={onImportSuccess}
+                  className="w-full md:w-auto px-8 py-3.5 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 active:bg-blue-800 transition-colors flex items-center justify-center shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+                >
+                  Continue Analysis
+                  <Zap className="w-5 h-5 ml-2" />
+                </button>
+              </div>
+
+              {(projectContext?.safetyStandard || projectContext?.targetAsil || projectContext?.safetyGoal) && (
+                <div className="flex flex-wrap items-center gap-x-8 gap-y-4 pt-5 border-t border-slate-100">
+                  {projectContext.safetyStandard && (
+                    <div className="flex items-center text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                      <ShieldCheck className="w-4 h-4 text-emerald-500 mr-2" />
+                      <span className="text-sm font-medium">Standard:</span>
+                      <span className="text-sm font-bold text-slate-800 ml-1.5">{projectContext.safetyStandard}</span>
+                    </div>
+                  )}
+                  {projectContext.targetAsil && (
+                    <div className="flex items-center text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                      <Activity className="w-4 h-4 text-blue-500 mr-2" />
+                      <span className="text-sm font-medium">Target ASIL:</span>
+                      <span className="text-sm font-bold text-slate-800 ml-1.5">{projectContext.targetAsil}</span>
+                    </div>
+                  )}
+                  {projectContext.safetyGoal && (
+                    <div className="flex items-start text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200 w-full md:w-auto md:flex-1">
+                      <Target className="w-4 h-4 text-purple-500 mr-2 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <span className="text-sm font-medium">Safety Goal:</span>
+                        <span className="text-sm font-bold text-slate-800 ml-1.5 line-clamp-2" title={projectContext.safetyGoal}>{projectContext.safetyGoal}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="w-full text-left mb-3 ml-2">
+         <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Start Fresh</h3>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
         {/* Create New Project Card */}
         <button
           onClick={onNewProject}
-          className="flex flex-col items-center p-8 bg-white border-2 border-transparent rounded-2xl shadow-sm hover:shadow-md hover:border-blue-500 transition-all group text-left"
+          className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-500 transition-all group"
         >
-          <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-            <FilePlus size={32} />
+          <div className="flex items-center mb-5">
+            <div className="w-14 h-14 bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform mr-4 border border-blue-100">
+              <FilePlus size={28} />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">Start New Project</h3>
           </div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">Create New Project</h3>
-          <p className="text-gray-500 text-center">
-            Start a fresh FMEDA analysis using our AI-powered wizard to help you set up components and failure modes.
+          <p className="text-gray-600 mb-6 flex-grow leading-relaxed">
+            Use the step-by-step AI wizard to structure components and functional safety architectures from concepts or plain text requirements.
           </p>
+          <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> AI-guided setup</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Context-aware hierarchy</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Automated failure mode generation</li>
+          </ul>
         </button>
 
         {/* Import Project Card */}
         <button
           onClick={handleImportClick}
-          className="flex flex-col items-center p-8 bg-white border-2 border-transparent rounded-2xl shadow-sm hover:shadow-md hover:border-green-500 transition-all group text-left"
+          className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-emerald-500 transition-all group"
         >
-          <div className="w-16 h-16 bg-green-50 text-green-600 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-            <Upload size={32} />
+          <div className="flex items-center mb-5">
+            <div className="w-14 h-14 bg-gradient-to-br from-emerald-50 to-teal-50 text-emerald-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform mr-4 border border-emerald-100">
+              <Upload size={28} />
+            </div>
+            <h3 className="text-xl font-bold text-gray-900">Import Existing File</h3>
           </div>
-          <h3 className="text-xl font-semibold text-gray-900 mb-2">Import Project</h3>
-          <p className="text-gray-500 text-center">
-            Load an existing FMEDA project from a JSON file to continue your analysis and make updates.
+          <p className="text-gray-600 mb-6 flex-grow leading-relaxed">
+            Load a previously exported FMEDA project JSON file to continue your analysis with our inline editing and safety metrics.
           </p>
+          <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Fast flat-state loading</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Supports legacy format parsing</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Instantly updates local storage</li>
+          </ul>
           <input
             type="file"
             ref={fileInputRef}
