@@ -12,6 +12,8 @@ export interface EditableTextCellProps {
   className?: string;
   multiline?: boolean;
   placeholder?: string;
+  /** If true, opens the popover editor immediately on mount */
+  autoOpen?: boolean;
 }
 
 export const EditableTextCell: React.FC<EditableTextCellProps> = ({
@@ -20,6 +22,7 @@ export const EditableTextCell: React.FC<EditableTextCellProps> = ({
   className = '',
   multiline = false,
   placeholder = 'Click to edit',
+  autoOpen = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [value, setValue] = useState(initialValue || '');
@@ -28,6 +31,14 @@ export const EditableTextCell: React.FC<EditableTextCellProps> = ({
   useEffect(() => {
     setValue(initialValue || '');
   }, [initialValue]);
+
+  // Auto-open on mount when triggered externally (e.g. rename pencil)
+  useEffect(() => {
+    if (autoOpen) {
+      openPopover();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const adjustHeight = useCallback(() => {
     if (multiline && inputRef.current) {

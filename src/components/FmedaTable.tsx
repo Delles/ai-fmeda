@@ -14,7 +14,6 @@ import {
   Download,
   ChevronDown,
   ChevronRight,
-  ChevronsRight,
   Layers,
   Box,
   Cpu,
@@ -23,9 +22,18 @@ import {
   FileJson,
   FileCode,
   FileSpreadsheet,
+  Sparkles,
+  Pencil,
+  Loader2,
 } from 'lucide-react';
 import { FmedaNode, FmedaNodeType } from '../types/fmeda';
 import { useFmedaStore } from '../store/fmedaStore';
+import { useAIStore } from '../store/aiStore';
+import {
+  generateFunctionsForComponent,
+  generateFailureModesForFunction,
+  refineFailureMode
+} from '../services/aiService';
 import { exportToJson } from '../utils/export';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { EditableTextCell } from './cells/EditableTextCell';
@@ -33,6 +41,7 @@ import { EditableNumberCell } from './cells/EditableNumberCell';
 import { EditableAICell } from './cells/EditableAICell';
 import { DocumentUpload } from './DocumentUpload';
 import { useConfirm } from '../hooks/useConfirm';
+import { formatAIError } from '../lib/errorUtils';
 import { generateId } from '../utils/id';
 import { cn } from '../lib/utils';
 import {
@@ -148,8 +157,14 @@ export const FmedaTable: React.FC = () => {
     updateNode,
     deleteNode,
     addNode,
-    setSelectedId
+    setSelectedId,
+    projectContext
   } = useFmedaStore();
+
+  const { config: aiConfig } = useAIStore();
+
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [loadingNodeId, setLoadingNodeId] = useState<string | null>(null);
 
   const tableData = useMemo(() => {
     if (!selectedId) {
@@ -176,6 +191,7 @@ export const FmedaTable: React.FC = () => {
 
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<ExpandedState>({});
+  const [renamingId, setRenamingId] = useState<string | null>(null);
 
   const handleExport = () => {
     exportToJson(Object.values(nodes), useFmedaStore.getState().projectContext);
@@ -187,7 +203,8 @@ export const FmedaTable: React.FC = () => {
       title: `Delete ${original.type}?`,
       description: `Are you sure you want to delete "${original.name}" and all its descendants?`,
       variant: 'destructive',
-      confirmText: 'Delete'
+      confirmText: 'Delete',
+      icon: 'warning'
     });
 
     if (isConfirmed) {
@@ -244,47 +261,278 @@ export const FmedaTable: React.FC = () => {
     updateNode(row.original.id, { [field]: value });
   };
 
+  const handleRowAiEdit = async (row: Row<FmedaNode>) => {
+    if (!aiConfig.apiKey) {
+      await confirm({
+        title: 'API Key Missing',
+        description: 'Please set your AI API key in the settings (top right) first.',
+        type: 'alert',
+        icon: 'info'
+      });
+      return;
+    }
+    if (!projectContext) {
+      await confirm({
+        title: 'Context Missing',
+        description: 'Project context is missing. Please ensure you have uploaded documents or described the project.',
+        type: 'alert',
+        icon: 'info'
+      });
+      return;
+    }
+
+    const node = row.original;
+    if (node.type !== 'FailureMode') return;
+
+    // Check if row already has data
+    const hasExistingData = node.localEffect || node.safetyMechanism || (node.fitRate && node.fitRate > 0);
+
+    if (hasExistingData) {
+      const isConfirmed = await confirm({
+        title: 'Refine Failure Mode?',
+        description: 'This row already has data. Do you want AI to suggest improvements and complete missing fields? This will overwrite existing values.',
+        confirmText: 'Refine',
+        variant: 'default',
+        icon: 'sparkles'
+      });
+      if (!isConfirmed) return;
+    }
+
+    setIsAiLoading(true);
+    setLoadingNodeId(node.id);
+
+    try {
+      const { systemName, subsystemName, componentName, functionName } = getAiContext(row as any);
+
+      const refined = await refineFailureMode(
+        aiConfig,
+        projectContext,
+        systemName,
+        subsystemName,
+        componentName,
+        functionName,
+        {
+          name: node.name,
+          localEffect: node.localEffect,
+          safetyMechanism: node.safetyMechanism,
+          diagnosticCoverage: node.diagnosticCoverage,
+          fitRate: node.fitRate
+        }
+      );
+
+      updateNode(node.id, {
+        localEffect: refined.localEffect,
+        safetyMechanism: refined.safetyMechanism,
+        diagnosticCoverage: refined.diagnosticCoverage,
+        fitRate: refined.fitRate,
+      });
+    } catch (error) {
+      console.error('AI Refinement failed:', error);
+      const { title, message, icon } = formatAIError(error);
+      await confirm({
+        title,
+        description: message,
+        type: 'alert',
+        icon,
+        variant: title.includes('Limit') || title.includes('Quota') ? 'default' : 'destructive'
+      });
+    } finally {
+      setIsAiLoading(false);
+      setLoadingNodeId(null);
+    }
+  };
+
+  const handleBulkGenerate = async () => {
+    if (!selectedId) return;
+    if (!aiConfig.apiKey) {
+      await confirm({
+        title: 'API Key Missing',
+        description: 'Please set your AI API key in the settings (top right) first.',
+        type: 'alert',
+        icon: 'info'
+      });
+      return;
+    }
+    if (!projectContext) {
+      await confirm({
+        title: 'Context Missing',
+        description: 'Project context is missing. Please ensure you have uploaded documents in the Wizard or Project Setup.',
+        type: 'alert',
+        icon: 'info'
+      });
+      return;
+    }
+
+    const parentNode = nodes[selectedId];
+    const nextType = getNextNodeType(parentNode.type);
+    if (!nextType) return;
+
+    setIsAiLoading(true);
+
+    try {
+      // Find parent hierarchy names
+      let systemName = '';
+      let subsystemName = '';
+      let componentName = '';
+      let functionName = '';
+
+      let current: FmedaNode | null = parentNode;
+      while (current) {
+        if (current.type === 'System') systemName = current.name;
+        if (current.type === 'Subsystem') subsystemName = current.name;
+        if (current.type === 'Component') componentName = current.name;
+        if (current.type === 'Function') functionName = current.name;
+        current = current.parentId ? nodes[current.parentId] : null;
+      }
+
+      if (nextType === 'Function') {
+        const functions = await generateFunctionsForComponent(
+          aiConfig,
+          projectContext,
+          systemName,
+          subsystemName,
+          componentName
+        );
+
+        functions.forEach(f => {
+          addNode({
+            id: generateId(),
+            name: f.name,
+            type: 'Function',
+            parentId: parentNode.id,
+            childIds: []
+          });
+        });
+      } else if (nextType === 'FailureMode') {
+        const failureModes = await generateFailureModesForFunction(
+          aiConfig,
+          projectContext,
+          systemName,
+          subsystemName,
+          componentName,
+          functionName
+        );
+
+        failureModes.forEach(fm => {
+          addNode({
+            id: generateId(),
+            name: fm.name,
+            type: 'FailureMode',
+            parentId: parentNode.id,
+            childIds: [],
+            localEffect: fm.localEffect || '',
+            safetyMechanism: fm.safetyMechanism || '',
+            diagnosticCoverage: fm.diagnosticCoverage || 0,
+            fitRate: fm.fitRate || 0,
+            classification: 'Safe'
+          });
+        });
+      }
+
+      setExpanded(prev => {
+        if (typeof prev === 'boolean') return prev;
+        return { ...prev, [parentNode.id]: true };
+      });
+    } catch (error) {
+      console.error('Bulk generation failed:', error);
+      const { title, message, icon } = formatAIError(error);
+      await confirm({
+        title,
+        description: message,
+        type: 'alert',
+        icon,
+        variant: title.includes('Limit') || title.includes('Quota') ? 'default' : 'destructive'
+      });
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const columns = useMemo(
     () => [
       columnHelper.accessor('name', {
         id: 'name',
         header: 'Hierarchy / Name',
-        cell: ({ row, getValue }) => (
-          <div
-            className="flex items-center gap-2"
-            style={{ paddingLeft: `${row.depth * 1.25}rem` }}
-          >
-            {row.getCanExpand() ? (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  row.getToggleExpandedHandler()();
-                }}
-                className="p-0.5 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
-              >
-                {row.getIsExpanded() ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </button>
-            ) : (
-              <span className="w-5 flex-shrink-0" />
-            )}
-            {/* FIX #6: Show type-based icon in every row */}
-            {NODE_TYPE_CONFIG[row.original.type]?.icon}
-            <div className="flex-1 min-w-0">
-              <EditableTextCell
-                initialValue={getValue()}
-                onSave={(val) => handleCellSave(row, 'name', val)}
-                multiline
-                className={
-                  row.original.type === 'System' ? "font-bold" :
-                  row.original.type === 'Subsystem' ? "font-semibold" :
-                  row.original.type === 'Component' ? "font-semibold" :
-                  row.original.type === 'Function' ? "font-medium" :
-                  ""
-                }
-              />
+        cell: ({ row, getValue }) => {
+          const isFailureMode = row.original.type === 'FailureMode';
+          const isRenaming = renamingId === row.original.id;
+          const fontClass =
+            row.original.type === 'System' ? 'font-bold' :
+            row.original.type === 'Subsystem' ? 'font-semibold' :
+            row.original.type === 'Component' ? 'font-semibold' :
+            row.original.type === 'Function' ? 'font-medium' : '';
+
+          return (
+            <div
+              className="flex items-center gap-2"
+              style={{ paddingLeft: `${row.depth * 1.25}rem` }}
+            >
+              {row.getCanExpand() ? (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    row.getToggleExpandedHandler()();
+                  }}
+                  className="p-0.5 hover:bg-gray-200 rounded transition-colors flex-shrink-0"
+                >
+                  {row.getIsExpanded() ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </button>
+              ) : (
+                <span className="w-5 flex-shrink-0" />
+              )}
+              {NODE_TYPE_CONFIG[row.original.type]?.icon}
+              <div className="flex-1 min-w-0 group/name">
+                {isFailureMode ? (
+                  // FailureMode: keep inline editing, no navigation
+                  <EditableTextCell
+                    initialValue={getValue()}
+                    onSave={(val) => handleCellSave(row, 'name', val)}
+                    multiline
+                    className=""
+                  />
+                ) : isRenaming ? (
+                  // Rename mode: show EditableTextCell, auto-committed on blur
+                  <EditableTextCell
+                    initialValue={getValue()}
+                    onSave={(val) => {
+                      handleCellSave(row, 'name', val);
+                      setRenamingId(null);
+                    }}
+                    autoOpen
+                    multiline
+                    className={fontClass}
+                  />
+                ) : (
+                  // Nav mode: blue link navigates, pencil appears on hover
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(row.original.id)}
+                      className={cn(
+                        "text-left truncate transition-colors hover:text-blue-700 hover:underline underline-offset-2 text-blue-600",
+                        fontClass
+                      )}
+                      title={`Open ${row.original.type}: ${getValue()}`}
+                    >
+                      {getValue()}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRenamingId(row.original.id);
+                      }}
+                      className="opacity-0 group-hover/name:opacity-60 hover:!opacity-100 p-0.5 rounded hover:bg-gray-200 transition-all flex-shrink-0"
+                      title="Rename"
+                    >
+                      <Pencil size={12} className="text-gray-500" />
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ),
+          );
+        },
       }),
       columnHelper.accessor((row) => row.localEffect || '', {
         id: 'localEffect',
@@ -394,25 +642,24 @@ export const FmedaTable: React.FC = () => {
         id: 'actions',
         header: '',
         cell: (info) => (
-          // FIX #7: Cleaner actions with more spacing and better icons
           <div className="flex items-center gap-1 justify-end">
-            {getNextNodeType(info.row.original.type) && (
+            {info.row.original.type === 'FailureMode' && (
               <button
-                onClick={() => handleAddChild(info.row.original)}
-                className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-md transition-colors"
-                title={`Add ${getNextNodeType(info.row.original.type)}`}
+                onClick={() => handleRowAiEdit(info.row as any)}
+                disabled={isAiLoading}
+                className={cn(
+                  "p-1.5 rounded-md transition-colors",
+                  isAiLoading ? "text-gray-300 cursor-not-allowed" : "text-purple-600 hover:bg-purple-50"
+                )}
+                title="Refine row with AI"
               >
-                <Plus size={15} />
+                {loadingNodeId === info.row.original.id ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Sparkles size={15} />
+                )}
               </button>
             )}
-            <button
-              onClick={() => setSelectedId(info.row.original.id)}
-              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-              title="Drill into children"
-            >
-              {/* FIX #7: ChevronsRight is much clearer than ExternalLink for "drill down" */}
-              <ChevronsRight size={15} />
-            </button>
             <button
               onClick={() => handleDelete(info.row as any)}
               className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"
@@ -424,7 +671,7 @@ export const FmedaTable: React.FC = () => {
         ),
       }),
     ],
-    [deleteNode, addNode, updateNode, nodes, confirm, setSelectedId]
+    [deleteNode, addNode, updateNode, nodes, confirm, setSelectedId, renamingId, setRenamingId, isAiLoading, loadingNodeId]
   );
 
   const table = useReactTable({
@@ -590,6 +837,30 @@ export const FmedaTable: React.FC = () => {
         <div className="flex items-center gap-2">
           <DocumentUpload />
 
+          {selectedId && getNextNodeType(nodes[selectedId].type) && (
+            <button
+              onClick={handleBulkGenerate}
+              disabled={isAiLoading}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 text-white rounded-md shadow-sm transition-all text-xs font-semibold focus:outline-none focus:ring-2",
+                isAiLoading
+                  ? "bg-purple-400 cursor-not-allowed"
+                  : "bg-purple-600 hover:bg-purple-700 focus:ring-purple-500/20"
+              )}
+            >
+              {isAiLoading && !loadingNodeId ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Sparkles size={14} />
+              )}
+              <span>
+                {isAiLoading && !loadingNodeId
+                  ? `Generating ${getNextNodeType(nodes[selectedId].type)}s...`
+                  : `Generate ${getNextNodeType(nodes[selectedId].type)}s`}
+              </span>
+            </button>
+          )}
+
           <div className="w-px h-5 bg-gray-200 mx-0.5" />
 
           <Popover>
@@ -729,10 +1000,6 @@ export const FmedaTable: React.FC = () => {
                           Add {getNextNodeType(row.original.type)}
                         </ContextMenuItem>
                       )}
-                      <ContextMenuItem onClick={() => setSelectedId(row.original.id)}>
-                        <ChevronsRight size={14} className="mr-2 text-blue-600" />
-                        Drill Down
-                      </ContextMenuItem>
                       <ContextMenuSeparator />
                       <ContextMenuItem
                         onClick={() => handleDelete(row as any)}

@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target } from 'lucide-react';
 import { useFmedaStore } from '../store/fmedaStore';
 import { importFromJson } from '../utils/export';
+import { useConfirm } from '../hooks/useConfirm';
 
 interface HomeProps {
   onNewProject: () => void;
@@ -10,6 +11,7 @@ interface HomeProps {
 
 export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => {
   const { nodes, setNodes, projectContext } = useFmedaStore();
+  const confirm = useConfirm();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const nodesList = Object.values(nodes);
@@ -32,7 +34,12 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
         useFmedaStore.getState().setProjectContext(result.projectContext);
         onImportSuccess();
       } catch (error: any) {
-        alert(`Import failed: ${error.message}`);
+        await confirm({
+          title: 'Import Failed',
+          description: error.message || 'An unexpected error occurred during import.',
+          type: 'alert',
+          variant: 'destructive'
+        });
       } finally {
         e.target.value = '';
       }

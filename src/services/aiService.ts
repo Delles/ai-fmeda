@@ -53,20 +53,20 @@ export function getAIQuota(): { minuteRemaining: number; dayRemaining: number; m
 function checkAndRecordRequest(): void {
   const data = getRateLimitData();
   const now = Date.now();
-  
+
   data.minuteTimestamps = cleanTimestamps(data.minuteTimestamps, 60_000);
   data.dayTimestamps = cleanTimestamps(data.dayTimestamps, 24 * 60 * 60_000);
-  
+
   if (data.minuteTimestamps.length >= MAX_PER_MINUTE) {
     const oldestInMinute = data.minuteTimestamps[0];
     const waitSeconds = Math.ceil((60_000 - (now - oldestInMinute)) / 1000);
     throw new Error(`Rate limit: max ${MAX_PER_MINUTE} requests per minute. Please wait ${waitSeconds}s.`);
   }
-  
+
   if (data.dayTimestamps.length >= MAX_PER_DAY) {
     throw new Error(`Daily limit reached: max ${MAX_PER_DAY} AI requests per day. Resets in 24 hours.`);
   }
-  
+
   data.minuteTimestamps.push(now);
   data.dayTimestamps.push(now);
   saveRateLimitData(data);
@@ -82,22 +82,22 @@ function extractJson(text: string): any {
 
   const firstBrace = contentToParse.indexOf('{');
   const firstBracket = contentToParse.indexOf('[');
-  
-  const startIndex = firstBrace === -1 ? firstBracket : 
-                     firstBracket === -1 ? firstBrace : 
+
+  const startIndex = firstBrace === -1 ? firstBracket :
+                     firstBracket === -1 ? firstBrace :
                      Math.min(firstBrace, firstBracket);
-                     
+
   if (startIndex === -1) throw new Error('No JSON structure found');
-  
+
   const isArray = contentToParse[startIndex] === '[';
   const openChar = isArray ? '[' : '{';
   const closeChar = isArray ? ']' : '}';
-  
+
   let depth = 0;
   let endIndex = -1;
   let inString = false;
   let escapeNext = false;
-  
+
   for (let i = startIndex; i < contentToParse.length; i++) {
     const char = contentToParse[i];
     if (escapeNext) {
@@ -112,7 +112,7 @@ function extractJson(text: string): any {
       inString = !inString;
       continue;
     }
-    
+
     if (!inString) {
       if (char === openChar) depth++;
       else if (char === closeChar) {
@@ -138,7 +138,7 @@ function extractJson(text: string): any {
 
 async function callGeminiGeneric<T>(config: AIConfig, prompt: string): Promise<T> {
   const genAI = new GoogleGenAI({ apiKey: config.apiKey });
-  
+
   const response = await genAI.models.generateContent({
     model: config.model || 'gemini-1.5-flash',
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -183,14 +183,14 @@ async function callOpenAIGeneric<T>(config: AIConfig, prompt: string): Promise<T
 
   const data = await response.json();
   const contentText = data.choices[0].message.content;
-  
+
   return extractJson(contentText) as T;
 }
 
 async function callAIGeneric<T>(config: AIConfig, prompt: string): Promise<T> {
   // Enforce rate limiting before every call
   checkAndRecordRequest();
-  
+
   if (config.provider === 'openai') {
     return callOpenAIGeneric<T>(config, prompt);
   } else if (config.provider === 'gemini') {
@@ -208,13 +208,13 @@ function buildProjectContextBlock(ctx: ProjectContext): string {
   if (ctx.safetyStandard) parts.push(`Safety Standard: ${ctx.safetyStandard}`);
   if (ctx.targetAsil) parts.push(`Target ASIL: ${ctx.targetAsil}`);
   if (ctx.safetyGoal) parts.push(`Safety Goal: ${ctx.safetyGoal}`);
-  
+
   parts.push('');
-  parts.push('Technical Documentation:');
+  if (ctx.documentText) {
+    parts.push(ctx.documentText.slice(0, 60000));
+  }
   parts.push('"""');
-  parts.push(ctx.documentText.slice(0, 60000));
-  parts.push('"""');
-  
+
   return parts.join('\n');
 }
 
@@ -238,7 +238,7 @@ export const getAISuggestions = async (
 
     Context from documentation:
     """
-    ${contextText.slice(0, 64000)} 
+    ${contextText.slice(0, 64000)}
     """
 
     Current FMEDA Context:
@@ -343,7 +343,7 @@ export const generateFunctionsForComponent = async (
     Component: ${componentName}
 
     Identify 2-5 key functions that this component performs in the context of a ${projectContext.safetyStandard || 'functional safety'} analysis${projectContext.targetAsil ? ` at ${projectContext.targetAsil} level` : ''}.
-    
+
     Return the response as a JSON object with a "functions" array. Each function should have a "name" field.
     Example:
     {
@@ -412,6 +412,62 @@ export const generateFailureModesForFunction = async (
 
   const result = await callAIGeneric<{ failureModes: FmedaFailureModeDeep[] }>(config, prompt);
   return result.failureModes || [];
+};
+
+/**
+ * Refine/Complete an existing failure mode's details using AI.
+ * Used for the "Edit with AI" row action.
+ */
+export const refineFailureMode = async (
+  config: AIConfig,
+  projectContext: ProjectContext,
+  systemName: string,
+  subsystemName: string,
+  componentName: string,
+  functionName: string,
+  failureMode: Partial<FmedaFailureModeDeep>
+): Promise<FmedaFailureModeDeep> => {
+  if (!config.apiKey) {
+    throw new Error('API Key is missing');
+  }
+
+  const contextBlock = buildProjectContextBlock(projectContext);
+
+  const prompt = `
+    You are an expert in Functional Safety and FMEDA.
+    Refine and complete the technical details for a SPECIFIC failure mode.
+
+    ${contextBlock}
+
+    Context:
+    - System: ${systemName}
+    - Subsystem: ${subsystemName}
+    - Component: ${componentName}
+    - Function: ${functionName}
+
+    FAILURE MODE DATA:
+    - Name: ${failureMode.name}
+    - Current Local Effect: ${failureMode.localEffect || '(Empty)'}
+    - Current Safety Mechanism: ${failureMode.safetyMechanism || '(Empty)'}
+    - Current DC: ${failureMode.diagnosticCoverage !== undefined ? failureMode.diagnosticCoverage : '(Empty)'}
+    - Current FIT: ${failureMode.fitRate || '(Empty)'}
+
+    TASK:
+    1. If a field is (Empty), provide a realistic suggestion.
+    2. If a field has content, refine it to be more technically precise for a ${projectContext.safetyStandard || 'safety'} analysis. If it is already perfect, keep it as is.
+    3. Ensure the Diagnostic Coverage (DC) and FIT rate are realistic for this type of component.
+
+    Return the response as a JSON object with: localEffect, safetyMechanism, diagnosticCoverage (number 0-1), fitRate (integer).
+    Example:
+    {
+      "localEffect": "Description...",
+      "safetyMechanism": "Mechanism...",
+      "diagnosticCoverage": 0.9,
+      "fitRate": 10
+    }
+  `;
+
+  return await callAIGeneric<FmedaFailureModeDeep>(config, prompt);
 };
 
 /**

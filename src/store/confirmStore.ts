@@ -6,6 +6,8 @@ export interface ConfirmOptions {
   confirmText?: string;
   cancelText?: string;
   variant?: "default" | "destructive";
+  type?: "confirm" | "alert";
+  icon?: "info" | "warning" | "error" | "sparkles";
 }
 
 interface ConfirmState {
@@ -15,6 +17,8 @@ interface ConfirmState {
   confirmText: string;
   cancelText: string;
   variant: "default" | "destructive";
+  type: "confirm" | "alert";
+  icon?: "info" | "warning" | "error" | "sparkles";
   resolve: ((value: boolean) => void) | null;
   confirm: (options: ConfirmOptions) => Promise<boolean>;
   close: () => void;
@@ -27,6 +31,7 @@ export const useConfirmStore = create<ConfirmState>((set, get) => ({
   confirmText: "Confirm",
   cancelText: "Cancel",
   variant: "default",
+  type: "confirm",
   resolve: null,
   confirm: (options) => {
     const currentResolve = get().resolve;
@@ -39,9 +44,11 @@ export const useConfirmStore = create<ConfirmState>((set, get) => ({
         isOpen: true,
         title: options.title,
         description: options.description || "",
-        confirmText: options.confirmText || "Confirm",
+        confirmText: options.confirmText || (options.type === 'alert' ? 'OK' : 'Confirm'),
         cancelText: options.cancelText || "Cancel",
         variant: options.variant || "default",
+        type: options.type || "confirm",
+        icon: options.icon,
         resolve,
       });
     });

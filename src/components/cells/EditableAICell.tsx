@@ -11,6 +11,18 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '../ui/popover';
+import { useConfirm } from '../../hooks/useConfirm';
+import { formatAIError } from '../../lib/errorUtils';
+import { cn } from '../../lib/utils';
+
+/** Human-readable labels for FMEDA fields */
+const FIELD_LABELS: Record<string, string> = {
+  localEffect: 'Local Effect',
+  safetyMechanism: 'Safety Mechanism',
+  name: 'Failure Mode Name',
+  diagnosticCoverage: 'Diagnostic Coverage',
+  fitRate: 'FIT Rate',
+};
 
 export interface EditableAICellProps {
   initialValue: string;
@@ -33,12 +45,13 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [value, setValue] = useState(initialValue || '');
-  const [isHovered, setIsHovered] = useState(false);
 
   // AI State
   const [isAILoading, setIsAILoading] = useState(false);
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  // Track if suggestion was just applied for visual feedback
+  const [justApplied, setJustApplied] = useState(false);
 
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
@@ -113,20 +126,24 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
     }
   };
 
+  const confirm = useConfirm();
+
   const handleAISuggest = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
     if (!config.apiKey) {
-      alert('Please configure your AI API key in settings first.');
+      await confirm({
+        title: 'API Key Missing',
+        description: 'Please configure your AI API key in settings first to use AI features.',
+        type: 'alert',
+        icon: 'info'
+      });
       return;
     }
 
     setIsAILoading(true);
     setShowSuggestions(true);
-    if (!isOpen) {
-      openPopover();
-    }
 
     try {
       const contextText = documents.map(d => d.extractedText).join('\n\n');
@@ -134,7 +151,16 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
       setSuggestions(result);
     } catch (error) {
       console.error('Failed to get AI suggestions:', error);
-      alert('Failed to get AI suggestions. Check console for details.');
+      const { title, message, icon } = formatAIError(error);
+
+      await confirm({
+        title,
+        description: message,
+        type: 'alert',
+        icon,
+        variant: title.includes('Limit') || title.includes('Quota') ? 'default' : 'destructive'
+      });
+
       setShowSuggestions(false);
     } finally {
       setIsAILoading(false);
@@ -143,82 +169,126 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
 
   const handleSelectSuggestion = (suggestion: string) => {
     setValue(suggestion);
-    setShowSuggestions(false);
+
+    // Flash a brief "applied" indicator
+    setJustApplied(true);
+    setTimeout(() => setJustApplied(false), 1200);
+
     if (inputRef.current) {
       inputRef.current.focus();
       setTimeout(adjustHeight, 0);
     }
   };
 
-  const renderAIButton = (absolute: boolean = true) => (
+  const renderAITrigger = () => (
     <button
       type="button"
       onMouseDown={handleAISuggest}
       disabled={isAILoading}
-      className={`${absolute ? 'absolute right-6 top-1/2 -translate-y-1/2' : ''} p-1 rounded-md text-blue-500 hover:bg-blue-100 transition-colors ${isAILoading ? 'opacity-50 cursor-not-allowed' : ''} z-10`}
+      className={cn(
+        'flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all',
+        'bg-gradient-to-r from-blue-50 to-indigo-50 text-blue-600 border border-blue-200',
+        'hover:from-blue-100 hover:to-indigo-100 hover:border-blue-300 hover:shadow-sm',
+        isAILoading && 'opacity-60 cursor-not-allowed',
+      )}
       title="Get AI Suggestions"
       tabIndex={-1}
     >
-      {isAILoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+      {isAILoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+      <span className="hidden sm:inline">Suggest</span>
     </button>
   );
 
+  // Calculate the popover width based on whether suggestions are showing
+  const popoverWidth = showSuggestions ? 'w-[52rem]' : 'w-[28rem]';
+
   return (
     <Popover open={isOpen} onOpenChange={handleOpenChange}>
-      <div
-        className="relative w-full group"
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
-        <PopoverTrigger asChild>
-          <button
-            type="button"
-            className={`group/btn relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] pr-8 border border-transparent hover:border-gray-200 hover:shadow-sm transition-all ${!value ? 'text-gray-400 italic' : ''} ${className}`}
-          >
-            {value || placeholder}
-            <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover/btn:opacity-100 transition-opacity pointer-events-none">
-              <Pencil className="w-3 h-3 text-gray-400 hidden group-hover/btn:block" />
-            </div>
-          </button>
-        </PopoverTrigger>
-        {!isOpen && (isHovered || !value) && renderAIButton(true)}
-      </div>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            'group relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] border border-transparent hover:border-gray-200 hover:shadow-sm transition-all',
+            !value && 'text-gray-400 italic',
+            className,
+          )}
+        >
+          {value || placeholder}
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <Pencil className="w-3 h-3 text-gray-400" />
+          </div>
+        </button>
+      </PopoverTrigger>
 
       <PopoverContent
-        className="w-[32rem] p-3 flex flex-col gap-2"
+        className={cn(
+          popoverWidth,
+          'p-0 transition-[width] duration-200 ease-out',
+        )}
         align="start"
         collisionPadding={16}
         style={{ maxHeight: 'var(--radix-popover-content-available-height)' }}
       >
-        <div className="relative w-full flex-1 overflow-y-auto rounded border border-blue-500 focus-within:ring-2 focus-within:ring-blue-500 bg-white">
-          {multiline ? (
-            <textarea
-              ref={inputRef as React.RefObject<HTMLTextAreaElement>}
-              value={value}
-              onChange={(e) => {
-                setValue(e.target.value);
-                adjustHeight();
-              }}
-              onKeyDown={handleKeyDown}
-              className="w-full min-h-[8rem] p-2 pr-8 focus:outline-none text-gray-900 overflow-hidden resize-none bg-transparent"
-              placeholder={placeholder}
-            />
-          ) : (
-            <input
-              ref={inputRef as React.RefObject<HTMLInputElement>}
-              type="text"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onKeyDown={handleKeyDown}
-              className="w-full p-2 pr-8 focus:outline-none text-gray-900 bg-transparent"
-              placeholder={placeholder}
-            />
-          )}
-          {renderAIButton(true)}
+        <div className={cn(
+          'flex',
+          showSuggestions ? 'flex-row' : 'flex-col',
+        )}>
+          {/* ── Left side: Editor ── */}
+          <div className={cn(
+            'flex flex-col gap-2 p-3',
+            showSuggestions ? 'w-1/2 border-r border-gray-100' : 'w-full',
+          )}>
+            {/* Applied flash indicator */}
+            {justApplied && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-medium animate-[fadeIn_0.2s_ease-out]">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Suggestion applied — edit below if needed
+              </div>
+            )}
 
+            <div className={cn(
+              'relative w-full flex-1 rounded-lg border transition-colors bg-white',
+              justApplied ? 'border-emerald-400 ring-2 ring-emerald-400/20' : 'border-gray-200 focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-400/20',
+            )}>
+              {multiline ? (
+                <textarea
+                  ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+                  value={value}
+                  onChange={(e) => {
+                    setValue(e.target.value);
+                    adjustHeight();
+                  }}
+                  onKeyDown={handleKeyDown}
+                  className="w-full min-h-[6rem] p-2.5 pr-10 focus:outline-none text-sm text-gray-900 overflow-hidden resize-none bg-transparent rounded-lg"
+                  placeholder={placeholder}
+                />
+              ) : (
+                <input
+                  ref={inputRef as React.RefObject<HTMLInputElement>}
+                  type="text"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  className="w-full p-2.5 pr-10 focus:outline-none text-sm text-gray-900 bg-transparent rounded-lg"
+                  placeholder={placeholder}
+                />
+              )}
+            </div>
+
+            {/* Editor footer: AI button + keyboard hints */}
+            <div className="flex items-center justify-between gap-2">
+              {renderAITrigger()}
+              <div className="text-[10px] text-gray-400 flex gap-2">
+                <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">Esc</kbd> cancel</span>
+                <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">{multiline ? 'Ctrl+↵' : '↵'}</kbd> save</span>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Right side: AI Suggestions ── */}
           {showSuggestions && (
             <div
-              className="absolute z-50 left-0 top-full mt-1 w-full max-w-[90vw]"
+              className="w-1/2 p-3 bg-gray-50/50 animate-[slideIn_0.2s_ease-out]"
               onMouseDown={(e) => e.preventDefault()}
             >
               <AISuggestionPanel
@@ -226,13 +296,10 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
                 isLoading={isAILoading}
                 onSelect={handleSelectSuggestion}
                 onClose={() => setShowSuggestions(false)}
+                fieldLabel={FIELD_LABELS[field] || field}
               />
             </div>
           )}
-        </div>
-        <div className="text-xs text-gray-500 flex justify-between shrink-0">
-          <span>Esc to cancel</span>
-          <span>{multiline ? 'Ctrl+Enter to save' : 'Enter to save'}</span>
         </div>
       </PopoverContent>
     </Popover>

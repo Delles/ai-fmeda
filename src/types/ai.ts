@@ -46,11 +46,11 @@ export interface FmedaSystemDeep {
 }
 
 export interface ProjectContext {
-  projectName: string;
-  safetyStandard: string;
-  targetAsil: string;
-  safetyGoal: string;
-  documentText: string;
+  projectName?: string;
+  safetyStandard?: string;
+  targetAsil?: string;
+  safetyGoal?: string;
+  documentText?: string;
 }
 
 export type WizardStepNumber = 1 | 2 | 3 | 4;
