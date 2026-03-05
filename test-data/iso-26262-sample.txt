@@ -1,0 +1,23 @@
+ISO 26262-5:2018 - Product development at the hardware level
+
+8.4.5 Evaluation of the hardware architectural metrics
+
+The hardware architectural metrics are used to evaluate the hardware architecture of the item. 
+The metrics include the Single-Point Fault Metric (SPFM) and the Latent-Fault Metric (LFM).
+
+Target values for SPFM:
+- ASIL B: > 90%
+- ASIL C: > 97%
+- ASIL D: > 99%
+
+Target values for LFM:
+- ASIL B: > 60%
+- ASIL C: > 80%
+- ASIL D: > 90%
+
+Diagnostic coverage (DC) is the proportion of the hardware failure rate that is detected or controlled by the implemented safety mechanisms.
+Examples of Safety Mechanisms:
+- Error Detection Code (EDC)
+- Watchdog timer
+- Voltage monitoring
+- Memory protection unit (MPU)

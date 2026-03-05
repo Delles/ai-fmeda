@@ -1,0 +1,33 @@
+TECHNICAL SPECIFICATION: INTELLIGENT BRAKE PRESSURE SENSOR (IBPS-X1)
+Version: 1.2
+Date: 2026-02-24
+Classification: INTERNAL - ENGINEERING
+
+1. PRODUCT OVERVIEW
+The IBPS-X1 is a high-precision micromachined silicon pressure sensor designed for automotive braking systems (ABS/ESC). It integrates a piezoresistive sensing bridge with a custom Signal Conditioning ASIC.
+
+2. FUNCTIONAL DESCRIPTION
+- Measurement Range: 0 to 250 bar hydraulic pressure.
+- Accuracy: +/- 1.0% FS over temperature (-40°C to 125°C).
+- Supply Voltage: 4.5V to 5.5V DC.
+- Communication: Single Edge Nibble Transmission (SENT) per SAE J2716.
+
+3. HARDWARE ARCHITECTURE
+- Sensing Element: MEMS Piezoresistive Bridge.
+- ASIC: Contains Instrumentation Amplifier, 14-bit ADC, Digital Signal Processor (DSP), and SENT Driver.
+- Internal Regulators: Two-stage LDO for bridge and digital logic isolation.
+
+4. SAFETY FEATURES & DIAGNOSTICS (ISO 26262 Requirements)
+- Bridge Monitoring: The ASIC continuously monitors the common-mode voltage of the piezoresistive bridge. A shift outside the 2.0V - 3.0V range indicates a bridge fault.
+- Memory Integrity: Startup and background CRC checks on the non-volatile memory (EEPROM) containing calibration coefficients.
+- Signal Path Supervision: Internal ADC reference voltage is monitored. If the reference drifts by more than 50mV, a diagnostic status nibble is set in the SENT frame.
+- Over-temperature Protection: Internal junction temperature sensor triggers a "Safe State" (Status Nibble = 0x3) if temperature exceeds 150°C.
+
+5. KNOWN FAILURE MODES & ANALYTICAL DATA
+- Bridge Resistive Path Open: Leads to full-scale or zero-scale output. Detected by bridge monitoring.
+- Digital Core Hang: Watchdog timer (WDT) integrated into the ASIC resets the digital logic within 10ms of a stall.
+- Output Driver Short to VCC/GND: Detected by the receiving ECU through SENT protocol timing violations or constant high/low levels.
+
+6. SAFETY GOALS
+- SG1: Prevent unintended braking pressure increase due to sensor over-reading. (ASIL D)
+- SG2: Detect loss of pressure signal within 20ms. (ASIL B)

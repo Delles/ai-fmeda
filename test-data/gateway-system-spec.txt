@@ -1,0 +1,21 @@
+SYSTEM SPECIFICATION: AUTOMOTIVE GATEWAY MODULE (AGM-V3)
+
+1. OVERVIEW
+The AGM-V3 is a central communication node for vehicle networks, responsible for routing data between high-speed CAN (Controller Area Network) and Ethernet backbones. It ensures secure and reliable data exchange between the Powertrain and Infotainment domains.
+
+2. SYSTEM COMPONENTS
+- Main Microcontroller (MCU): A high-performance automotive-grade processor managing routing tables and security protocols.
+- CAN Transceiver Array: A set of four physical layer interfaces for CAN-FD communication.
+- Gigabit Ethernet Switch: An integrated switch for high-bandwidth backbone connectivity.
+- Power Management Integrated Circuit (PMIC): Provides stable voltage rails (1.2V, 3.3V, 5V) from the vehicle battery.
+
+3. KEY FUNCTIONS
+- Message Routing: Transferring frames between different CAN channels based on ID lookup tables.
+- Protocol Translation: Converting CAN-FD frames into Ethernet UDP packets for the domain controller.
+- Network Security: Performing Message Authentication Code (MAC) verification on safety-critical frames.
+- Diagnostic Services: Supporting Unified Diagnostic Services (UDS) over CAN and DoIP (Diagnostics over IP).
+
+4. SAFETY REQUIREMENTS
+- Data integrity must be maintained during routing (No bit-flips in the payload).
+- Routing latency for safety-critical frames must be less than 5ms.
+- The PMIC must detect over-voltage conditions and enter a safe state to protect the MCU.
