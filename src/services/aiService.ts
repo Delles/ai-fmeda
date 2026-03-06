@@ -255,6 +255,137 @@ export const generateArchitecture = async (
 };
 
 /**
+ * Generate top-level systems for the project.
+ */
+export const generateSystems = async (
+  config: AIConfig,
+  projectContext: ProjectContext,
+  existingSystems?: string[]
+): Promise<{ name: string }[]> => {
+  if (!config.apiKey) {
+    throw new Error('API Key is missing');
+  }
+
+  const contextBlock = buildProjectContextBlock(projectContext);
+
+  const prompt = `
+    You are an expert in Functional Safety and FMEDA.
+    Based on the following project context, identify the top-level systems for an FMEDA analysis.
+
+    ${contextBlock}
+
+    ${existingSystems && existingSystems.length > 0 ? `
+    IMPORTANT: The following systems ALREADY EXIST. DO NOT generate these again or anything too similar. We want NEW systems.
+    ${existingSystems.map(s => `- ${s}`).join('\n    ')}
+    ` : ''}
+
+    Identify 1-3 key high-level systems for this project.
+
+    Return the response as a JSON object with a "systems" array. Each system should have a "name" field.
+    Example:
+    {
+      "systems": [
+         { "name": "Braking System" },
+         { "name": "Steering System" }
+      ]
+    }
+  `;
+
+  const result = await callAIGeneric<{ systems: { name: string }[] }>(config, prompt);
+  return result.systems || [];
+};
+
+/**
+ * Generate subsystems for a single system.
+ */
+export const generateSubsystemsForSystem = async (
+  config: AIConfig,
+  projectContext: ProjectContext,
+  systemName: string,
+  existingSubsystems?: string[]
+): Promise<{ name: string }[]> => {
+  if (!config.apiKey) {
+    throw new Error('API Key is missing');
+  }
+
+  const contextBlock = buildProjectContextBlock(projectContext);
+
+  const prompt = `
+    You are an expert in Functional Safety and FMEDA.
+    Based on the following project context, identify the key subsystems for the specific system.
+
+    ${contextBlock}
+
+    System: ${systemName}
+
+    ${existingSubsystems && existingSubsystems.length > 0 ? `
+    IMPORTANT: The following subsystems ALREADY EXIST for this system. DO NOT generate these again or anything too similar. We want NEW subsystems.
+    ${existingSubsystems.map(s => `- ${s}`).join('\n    ')}
+    ` : ''}
+
+    Identify 2-5 key subsystems that make up this system in the context of a ${projectContext.safetyStandard || 'functional safety'} architecture.
+
+    Return the response as a JSON object with a "subsystems" array. Each subsystem should have a "name" field.
+    Example:
+    {
+      "subsystems": [
+         { "name": "Hydraulic Control Unit" },
+         { "name": "Electronic Control Unit" }
+      ]
+    }
+  `;
+
+  const result = await callAIGeneric<{ subsystems: { name: string }[] }>(config, prompt);
+  return result.subsystems || [];
+};
+
+/**
+ * Generate components for a single subsystem.
+ */
+export const generateComponentsForSubsystem = async (
+  config: AIConfig,
+  projectContext: ProjectContext,
+  systemName: string,
+  subsystemName: string,
+  existingComponents?: string[]
+): Promise<{ name: string }[]> => {
+  if (!config.apiKey) {
+    throw new Error('API Key is missing');
+  }
+
+  const contextBlock = buildProjectContextBlock(projectContext);
+
+  const prompt = `
+    You are an expert in Functional Safety and FMEDA.
+    Based on the following project context, identify the key components for a specific subsystem.
+
+    ${contextBlock}
+
+    System: ${systemName}
+    Subsystem: ${subsystemName}
+
+    ${existingComponents && existingComponents.length > 0 ? `
+    IMPORTANT: The following components ALREADY EXIST for this subsystem. DO NOT generate these again or anything too similar. We want NEW components.
+    ${existingComponents.map(c => `- ${c}`).join('\n    ')}
+    ` : ''}
+
+    Identify 3-8 key components that this subsystem comprises in the context of a ${projectContext.safetyStandard || 'functional safety'} analysis.
+
+    Return the response as a JSON object with a "components" array. Each component should have a "name" field.
+    Example:
+    {
+      "components": [
+        { "name": "Pump Motor" },
+        { "name": "Intake Valve" }
+      ]
+    }
+  `;
+
+  const result = await callAIGeneric<{ components: { name: string }[] }>(config, prompt);
+  return result.components || [];
+};
+
+/**
  * Step 3: Generate functions for a single component.
  * Small, focused call — one per component.
  */
@@ -263,7 +394,8 @@ export const generateFunctionsForComponent = async (
   projectContext: ProjectContext,
   systemName: string,
   subsystemName: string,
-  componentName: string
+  componentName: string,
+  existingFunctions?: string[]
 ): Promise<FmedaFunctionDeep[]> => {
   if (!config.apiKey) {
     throw new Error('API Key is missing');
@@ -280,6 +412,11 @@ export const generateFunctionsForComponent = async (
     System: ${systemName}
     Subsystem: ${subsystemName}
     Component: ${componentName}
+
+    ${existingFunctions && existingFunctions.length > 0 ? `
+    IMPORTANT: The following functions ALREADY EXIST for this component. DO NOT generate these again or anything too similar. We want NEW functions.
+    ${existingFunctions.map(f => `- ${f}`).join('\n    ')}
+    ` : ''}
 
     Identify 2-5 key functions that this component performs in the context of a ${projectContext.safetyStandard || 'functional safety'} analysis${projectContext.targetAsil ? ` at ${projectContext.targetAsil} level` : ''}.
 
@@ -307,7 +444,8 @@ export const generateFailureModesForFunction = async (
   systemName: string,
   subsystemName: string,
   componentName: string,
-  functionName: string
+  functionName: string,
+  existingFailureModes?: string[]
 ): Promise<FmedaFailureModeDeep[]> => {
   if (!config.apiKey) {
     throw new Error('API Key is missing');
@@ -325,6 +463,11 @@ export const generateFailureModesForFunction = async (
     Subsystem: ${subsystemName}
     Component: ${componentName}
     Function: ${functionName}
+
+    ${existingFailureModes && existingFailureModes.length > 0 ? `
+    IMPORTANT: The following failure modes ALREADY EXIST for this function. DO NOT generate these again or anything too similar. We want NEW failure modes.
+    ${existingFailureModes.map(fm => `- ${fm}`).join('\n    ')}
+    ` : ''}
 
     Identify 2-4 realistic failure modes for this function.
     For each, provide:

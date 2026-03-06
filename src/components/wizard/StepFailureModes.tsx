@@ -98,14 +98,18 @@ export const StepFailureModes: React.FC<StepFailureModesProps> = ({
       setProgress({ current: i + 1, total: ref.functions.length, label: func.name });
 
       try {
-        const failureModes = await generateFailureModesForFunction(
+        const existingNames = func.failureModes?.map(fm => fm.name).filter(Boolean) || [];
+        const newFailureModes = await generateFailureModesForFunction(
           config, projectContext,
-          ref.systemName, ref.subsystemName, ref.componentName, func.name
+          ref.systemName, ref.subsystemName, ref.componentName, func.name, existingNames
         );
 
         const comp = updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx];
         if (!comp.functions) comp.functions = [];
-        comp.functions[i] = { ...comp.functions[i], failureModes };
+        comp.functions[i] = {
+          ...comp.functions[i],
+          failureModes: [...(comp.functions[i].failureModes || []), ...newFailureModes]
+        };
         onUpdateArchitecture(JSON.parse(JSON.stringify(updated)));
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed';

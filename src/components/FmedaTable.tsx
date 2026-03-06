@@ -32,7 +32,10 @@ import { useAIStore } from '../store/aiStore';
 import {
   generateFunctionsForComponent,
   generateFailureModesForFunction,
-  refineFailureMode
+  refineFailureMode,
+  generateSubsystemsForSystem,
+  generateComponentsForSubsystem,
+  generateSystems
 } from '../services/aiService';
 import { exportToJson } from '../utils/export';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -358,9 +361,7 @@ export const FmedaTable: React.FC = () => {
       return;
     }
 
-    const parentNode = nodes[selectedId];
-    if (!parentNode) return;
-    const nextType = getNextNodeType(parentNode.type);
+    const nextType = selectedId ? getNextNodeType(nodes[selectedId].type) : 'System';
     if (!nextType) return;
 
     setIsAiLoading(true);
@@ -372,22 +373,78 @@ export const FmedaTable: React.FC = () => {
       let componentName = '';
       let functionName = '';
 
-      let current: FmedaNode | null = parentNode;
-      while (current) {
-        if (current.type === 'System') systemName = current.name;
-        if (current.type === 'Subsystem') subsystemName = current.name;
-        if (current.type === 'Component') componentName = current.name;
-        if (current.type === 'Function') functionName = current.name;
-        current = current.parentId ? nodes[current.parentId] : null;
+      if (selectedId) {
+        let current: FmedaNode | null = nodes[selectedId];
+        while (current) {
+          if (current.type === 'System') systemName = current.name;
+          if (current.type === 'Subsystem') subsystemName = current.name;
+          if (current.type === 'Component') componentName = current.name;
+          if (current.type === 'Function') functionName = current.name;
+          current = current.parentId ? nodes[current.parentId] : null;
+        }
       }
 
-      if (nextType === 'Function') {
+      if (nextType === 'System') {
+        const existingNames = Object.values(nodes).filter(n => !n.parentId).map(n => n.name);
+        const systems = await generateSystems(aiConfig, projectContext, existingNames);
+        systems.forEach(s => {
+          addNode({
+            id: generateId(),
+            name: s.name,
+            type: 'System',
+            parentId: null,
+            childIds: []
+          });
+        });
+      } else if (nextType === 'Subsystem') {
+        const parentNode = nodes[selectedId!];
+        const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
+        const subsystems = await generateSubsystemsForSystem(
+          aiConfig,
+          projectContext,
+          systemName,
+          existingNames
+        );
+
+        subsystems.forEach(sub => {
+          addNode({
+            id: generateId(),
+            name: sub.name,
+            type: 'Subsystem',
+            parentId: parentNode.id,
+            childIds: []
+          });
+        });
+      } else if (nextType === 'Component') {
+        const parentNode = nodes[selectedId!];
+        const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
+        const components = await generateComponentsForSubsystem(
+          aiConfig,
+          projectContext,
+          systemName,
+          subsystemName,
+          existingNames
+        );
+
+        components.forEach(comp => {
+          addNode({
+            id: generateId(),
+            name: comp.name,
+            type: 'Component',
+            parentId: parentNode.id,
+            childIds: []
+          });
+        });
+      } else if (nextType === 'Function') {
+        const parentNode = nodes[selectedId!];
+        const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const functions = await generateFunctionsForComponent(
           aiConfig,
           projectContext,
           systemName,
           subsystemName,
-          componentName
+          componentName,
+          existingNames
         );
 
         functions.forEach(f => {
@@ -400,13 +457,16 @@ export const FmedaTable: React.FC = () => {
           });
         });
       } else if (nextType === 'FailureMode') {
+        const parentNode = nodes[selectedId!];
+        const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const failureModes = await generateFailureModesForFunction(
           aiConfig,
           projectContext,
           systemName,
           subsystemName,
           componentName,
-          functionName
+          functionName,
+          existingNames
         );
 
         failureModes.forEach(fm => {
@@ -425,10 +485,12 @@ export const FmedaTable: React.FC = () => {
         });
       }
 
-      setExpanded(prev => {
-        if (typeof prev === 'boolean') return prev;
-        return { ...prev, [parentNode.id]: true };
-      });
+      if (selectedId) {
+        setExpanded(prev => {
+          if (typeof prev === 'boolean') return prev;
+          return { ...prev, [selectedId]: true };
+        });
+      }
     } catch (error) {
       console.error('Bulk generation failed:', error);
       const { title, message, icon } = formatAIError(error);
@@ -847,7 +909,7 @@ export const FmedaTable: React.FC = () => {
         <div className="flex items-center gap-2">
           <DocumentUpload />
 
-          {selectedId && nodes[selectedId] && getNextNodeType(nodes[selectedId].type) && (
+          {(!selectedId || (nodes[selectedId] && getNextNodeType(nodes[selectedId].type))) && (
             <button
               onClick={handleBulkGenerate}
               disabled={isAiLoading}
@@ -865,8 +927,8 @@ export const FmedaTable: React.FC = () => {
               )}
               <span>
                 {isAiLoading && !loadingNodeId
-                  ? `Generating ${getNextNodeType(nodes[selectedId].type)}s...`
-                  : `Generate ${getNextNodeType(nodes[selectedId].type)}s`}
+                  ? `Generating ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}...`
+                  : `Generate ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}`}
               </span>
             </button>
           )}

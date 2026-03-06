@@ -177,11 +177,13 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
     setIsGenerating(true);
     setProgress({ current: 0, total: 1, label: ref.componentName });
     try {
+      const existingNames = ref.functions.map(f => f.name).filter(Boolean);
       const functions = await generateFunctionsForComponent(
-        config, projectContext, ref.systemName, ref.subsystemName, ref.componentName
+        config, projectContext, ref.systemName, ref.subsystemName, ref.componentName, existingNames
       );
       const updated = JSON.parse(JSON.stringify(architecture)) as FmedaSystemDeep[];
-      updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions = functions;
+      const currentFns = updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions || [];
+      updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions = [...currentFns, ...functions];
       onUpdateArchitecture(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate functions');
@@ -213,10 +215,12 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
       setProgress({ current: i + 1, total: toGenerate.length, label: ref.componentName });
 
       try {
+        const existingNames = ref.functions.map(f => f.name).filter(Boolean);
         const functions = await generateFunctionsForComponent(
-          config, projectContext, ref.systemName, ref.subsystemName, ref.componentName
+          config, projectContext, ref.systemName, ref.subsystemName, ref.componentName, existingNames
         );
-        updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions = functions;
+        const currentFns = updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions || [];
+        updated[ref.sysIdx].subsystems![ref.subIdx].components![ref.compIdx].functions = [...currentFns, ...functions];
         onUpdateArchitecture(JSON.parse(JSON.stringify(updated)));
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed';
