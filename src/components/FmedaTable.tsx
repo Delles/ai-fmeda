@@ -44,13 +44,8 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatAIError } from '../lib/errorUtils';
 import { generateId } from '../utils/id';
 import { cn } from '../lib/utils';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from './ui/context-menu';
+import { AILoadingIndicator } from './ui/AILoadingIndicator';
+
 
 const columnHelper = createColumnHelper<FmedaNode & { isPlaceholder?: boolean }>();
 
@@ -364,6 +359,7 @@ export const FmedaTable: React.FC = () => {
     }
 
     const parentNode = nodes[selectedId];
+    if (!parentNode) return;
     const nextType = getNextNodeType(parentNode.type);
     if (!nextType) return;
 
@@ -774,7 +770,21 @@ export const FmedaTable: React.FC = () => {
     : `${componentCount} Components • ${functionCount} Functions • ${failureModeCount} Failure Modes`;
 
   return (
-    <div className="space-y-0">
+    <div className="space-y-0 relative">
+      {/* Global overlay for bulk operations (blocking) */}
+      {isAiLoading && !loadingNodeId && (
+        <div className="absolute inset-0 z-50 bg-white/50 backdrop-blur-sm rounded-lg flex items-center justify-center p-4">
+          <AILoadingIndicator className="shadow-2xl" />
+        </div>
+      )}
+
+      {/* Floating toast for single row refinement (non-blocking) */}
+      {isAiLoading && loadingNodeId && (
+        <div className="fixed bottom-8 right-8 z-[100] animate-in slide-in-from-bottom-5 fade-in duration-300">
+          <AILoadingIndicator inline className="shadow-xl shadow-indigo-500/10 bg-white/95 backdrop-blur-md border border-indigo-100 pr-8" />
+        </div>
+      )}
+
       {/* ── Page Header Section ── */}
       <div className="pb-3 mb-3 border-b border-gray-100 sticky top-0 z-30 bg-white/95 backdrop-blur-sm pt-2 -mt-2">
         {/* Row 1: Title + KPI Badges */}
@@ -837,7 +847,7 @@ export const FmedaTable: React.FC = () => {
         <div className="flex items-center gap-2">
           <DocumentUpload />
 
-          {selectedId && getNextNodeType(nodes[selectedId].type) && (
+          {selectedId && nodes[selectedId] && getNextNodeType(nodes[selectedId].type) && (
             <button
               onClick={handleBulkGenerate}
               disabled={isAiLoading}
@@ -972,44 +982,25 @@ export const FmedaTable: React.FC = () => {
                 const rowClass = typeConfig.rowClass;
 
                 return (
-                  <ContextMenu key={row.id}>
-                    <ContextMenuTrigger asChild>
-                      <tr
-                        className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
+                  <tr
+                    key={row.id}
+                    className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
+                  >
+                    {row.getVisibleCells().map((cell, colIndex) => (
+                      <td
+                        key={cell.id}
+                        className={cn(
+                          "px-2 py-3 whitespace-normal text-sm relative group/cell",
+                          colIndex === 0 && "border-l-[4px]",
+                          colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
+                        )}
+                        data-row-index={rowIndex}
+                        data-col-index={colIndex}
                       >
-                        {row.getVisibleCells().map((cell, colIndex) => (
-                          <td
-                            key={cell.id}
-                            className={cn(
-                              "px-2 py-3 whitespace-normal text-sm relative group/cell",
-                              colIndex === 0 && "border-l-[4px]",
-                              colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
-                            )}
-                            data-row-index={rowIndex}
-                            data-col-index={colIndex}
-                          >
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                          </td>
-                        ))}
-                      </tr>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent className="w-48">
-                      {getNextNodeType(row.original.type) && (
-                        <ContextMenuItem onClick={() => handleAddChild(row.original)}>
-                          <Plus size={14} className="mr-2 text-emerald-600" />
-                          Add {getNextNodeType(row.original.type)}
-                        </ContextMenuItem>
-                      )}
-                      <ContextMenuSeparator />
-                      <ContextMenuItem
-                        onClick={() => handleDelete(row as any)}
-                        className="text-red-600 focus:bg-red-50 focus:text-red-700"
-                      >
-                        <Trash2 size={14} className="mr-2" />
-                        Delete
-                      </ContextMenuItem>
-                    </ContextMenuContent>
-                  </ContextMenu>
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
+                  </tr>
                 );
               })
             ) : (

@@ -10,67 +10,7 @@ export interface AISuggestionContext {
   failureMode: Partial<FmedaFailureMode>;
 }
 
-// ─── Rate Limiting ──────────────────────────────────────────────────────────
 
-const RATE_LIMIT_KEY = 'fmeda-ai-rate-limit';
-const MAX_PER_MINUTE = 5;
-const MAX_PER_DAY = 30;
-
-interface RateLimitData {
-  minuteTimestamps: number[];
-  dayTimestamps: number[];
-}
-
-function getRateLimitData(): RateLimitData {
-  try {
-    const raw = localStorage.getItem(RATE_LIMIT_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore parse errors */ }
-  return { minuteTimestamps: [], dayTimestamps: [] };
-}
-
-function saveRateLimitData(data: RateLimitData): void {
-  localStorage.setItem(RATE_LIMIT_KEY, JSON.stringify(data));
-}
-
-function cleanTimestamps(timestamps: number[], windowMs: number): number[] {
-  const cutoff = Date.now() - windowMs;
-  return timestamps.filter(t => t > cutoff);
-}
-
-export function getAIQuota(): { minuteRemaining: number; dayRemaining: number; minuteMax: number; dayMax: number } {
-  const data = getRateLimitData();
-  const minuteCleaned = cleanTimestamps(data.minuteTimestamps, 60_000);
-  const dayCleaned = cleanTimestamps(data.dayTimestamps, 24 * 60 * 60_000);
-  return {
-    minuteRemaining: Math.max(0, MAX_PER_MINUTE - minuteCleaned.length),
-    dayRemaining: Math.max(0, MAX_PER_DAY - dayCleaned.length),
-    minuteMax: MAX_PER_MINUTE,
-    dayMax: MAX_PER_DAY,
-  };
-}
-
-function checkAndRecordRequest(): void {
-  const data = getRateLimitData();
-  const now = Date.now();
-
-  data.minuteTimestamps = cleanTimestamps(data.minuteTimestamps, 60_000);
-  data.dayTimestamps = cleanTimestamps(data.dayTimestamps, 24 * 60 * 60_000);
-
-  if (data.minuteTimestamps.length >= MAX_PER_MINUTE) {
-    const oldestInMinute = data.minuteTimestamps[0];
-    const waitSeconds = Math.ceil((60_000 - (now - oldestInMinute)) / 1000);
-    throw new Error(`Rate limit: max ${MAX_PER_MINUTE} requests per minute. Please wait ${waitSeconds}s.`);
-  }
-
-  if (data.dayTimestamps.length >= MAX_PER_DAY) {
-    throw new Error(`Daily limit reached: max ${MAX_PER_DAY} AI requests per day. Resets in 24 hours.`);
-  }
-
-  data.minuteTimestamps.push(now);
-  data.dayTimestamps.push(now);
-  saveRateLimitData(data);
-}
 
 // ─── JSON Parsing ───────────────────────────────────────────────────────────
 
@@ -188,9 +128,6 @@ async function callOpenAIGeneric<T>(config: AIConfig, prompt: string): Promise<T
 }
 
 async function callAIGeneric<T>(config: AIConfig, prompt: string): Promise<T> {
-  // Enforce rate limiting before every call
-  checkAndRecordRequest();
-
   if (config.provider === 'openai') {
     return callOpenAIGeneric<T>(config, prompt);
   } else if (config.provider === 'gemini') {
@@ -209,11 +146,13 @@ function buildProjectContextBlock(ctx: ProjectContext): string {
   if (ctx.targetAsil) parts.push(`Target ASIL: ${ctx.targetAsil}`);
   if (ctx.safetyGoal) parts.push(`Safety Goal: ${ctx.safetyGoal}`);
 
-  parts.push('');
   if (ctx.documentText) {
+    parts.push('');
+    parts.push('Technical Documentation:');
+    parts.push('"""');
     parts.push(ctx.documentText.slice(0, 60000));
+    parts.push('"""');
   }
-  parts.push('"""');
 
   return parts.join('\n');
 }
@@ -449,16 +388,15 @@ export const refineFailureMode = async (
     - Name: ${failureMode.name}
     - Current Local Effect: ${failureMode.localEffect || '(Empty)'}
     - Current Safety Mechanism: ${failureMode.safetyMechanism || '(Empty)'}
-    - Current DC: ${failureMode.diagnosticCoverage !== undefined ? failureMode.diagnosticCoverage : '(Empty)'}
-    - Current FIT: ${failureMode.fitRate || '(Empty)'}
+    - Current DC: ${failureMode.diagnosticCoverage !== undefined && failureMode.diagnosticCoverage !== null ? failureMode.diagnosticCoverage : '(Empty)'}
+    - Current FIT: ${failureMode.fitRate !== undefined && failureMode.fitRate !== null ? failureMode.fitRate : '(Empty)'}
 
     TASK:
-    1. If a field is (Empty), provide a realistic suggestion.
+    1. If a field is (Empty) or missing, provide a realistic suggestion based on the context.
     2. If a field has content, refine it to be more technically precise for a ${projectContext.safetyStandard || 'safety'} analysis. If it is already perfect, keep it as is.
     3. Ensure the Diagnostic Coverage (DC) and FIT rate are realistic for this type of component.
 
-    Return the response as a JSON object with: localEffect, safetyMechanism, diagnosticCoverage (number 0-1), fitRate (integer).
-    Example:
+    Return the response as a JSON object strictly following this structure:
     {
       "localEffect": "Description...",
       "safetyMechanism": "Mechanism...",
@@ -467,7 +405,20 @@ export const refineFailureMode = async (
     }
   `;
 
-  return await callAIGeneric<FmedaFailureModeDeep>(config, prompt);
+  let result = await callAIGeneric<any>(config, prompt);
+
+  // Normalize wrapped responses in case the AI added a wrapper object or array
+  if (Array.isArray(result)) result = result[0] || {};
+  if (result.failureMode) result = result.failureMode;
+  if (Array.isArray(result.suggestions)) result = result.suggestions[0] || {};
+
+  return {
+    ...failureMode,
+    localEffect: result.localEffect || result.local_effect || failureMode.localEffect || '',
+    safetyMechanism: result.safetyMechanism || result.safety_mechanism || failureMode.safetyMechanism || '',
+    diagnosticCoverage: typeof result.diagnosticCoverage === 'number' ? result.diagnosticCoverage : (parseFloat(result.diagnosticCoverage) || failureMode.diagnosticCoverage || 0),
+    fitRate: typeof result.fitRate === 'number' ? result.fitRate : (parseFloat(result.fitRate) || failureMode.fitRate || 0),
+  } as FmedaFailureModeDeep;
 };
 
 /**

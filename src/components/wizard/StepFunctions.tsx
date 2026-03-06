@@ -6,9 +6,9 @@ import {
 } from 'lucide-react';
 import { FmedaSystemDeep, FmedaFunctionDeep, ProjectContext } from '@/types/ai';
 import { useAIStore } from '@/store/aiStore';
-import { generateFunctionsForComponent, getAIQuota } from '@/services/aiService';
+import { generateFunctionsForComponent } from '@/services/aiService';
 import { cn } from '@/lib/utils';
-import { AIQuotaBadge } from './AIQuotaBadge';
+import { AILoadingIndicator } from '../ui/AILoadingIndicator';
 
 interface StepFunctionsProps {
   architecture: FmedaSystemDeep[];
@@ -213,13 +213,6 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
       setProgress({ current: i + 1, total: toGenerate.length, label: ref.componentName });
 
       try {
-        // Rate limit: wait if needed (sequential, 1 at a time)
-        const quota = getAIQuota();
-        if (quota.minuteRemaining === 0) {
-          setError('Rate limit reached. Pausing — please wait 1 minute and try again.');
-          break;
-        }
-
         const functions = await generateFunctionsForComponent(
           config, projectContext, ref.systemName, ref.subsystemName, ref.componentName
         );
@@ -227,10 +220,6 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
         onUpdateArchitecture(JSON.parse(JSON.stringify(updated)));
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed';
-        if (msg.includes('Rate limit')) {
-          setError(msg + ' Generation paused — progress saved.');
-          break;
-        }
         console.error(`Failed for ${ref.componentName}:`, msg);
       }
     }
@@ -253,7 +242,6 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
           <p className="text-xs text-slate-500 mt-0.5">Identify key functions for each component.</p>
         </div>
         <div className="flex items-center gap-3">
-          <AIQuotaBadge />
           {!isGenerating ? (
             <button type="button" onClick={handleGenerateAll} disabled={isGenerating}
               className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-blue-600 text-white rounded-lg hover:from-violet-700 hover:to-blue-700 transition-all disabled:opacity-50 text-sm font-semibold shadow-sm">
@@ -271,16 +259,7 @@ export const StepFunctions: React.FC<StepFunctionsProps> = ({
 
       {/* Progress bar */}
       {progress && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-          <div className="flex items-center justify-between text-xs text-blue-700 mb-1.5">
-            <span className="font-medium">Processing: {progress.label}</span>
-            <span className="font-semibold">{progress.current}/{progress.total}</span>
-          </div>
-          <div className="w-full h-2 bg-blue-200 rounded-full overflow-hidden">
-            <div className="h-full bg-blue-600 rounded-full transition-all duration-500"
-              style={{ width: `${(progress.current / progress.total) * 100}%` }} />
-          </div>
-        </div>
+        <AILoadingIndicator progress={progress} inline />
       )}
 
       {error && (

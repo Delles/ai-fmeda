@@ -29,7 +29,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
                 const provider = e.target.value as any;
                 let defaultModel = config.model;
                 if (provider === 'openai') defaultModel = 'gpt-4o-mini';
-                if (provider === 'gemini') defaultModel = 'gemini-3-flash-preview';
+                if (provider === 'gemini') defaultModel = 'gemini-3.1-flash-lite-preview';
                 setConfig({ provider, model: defaultModel });
               }}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -65,6 +65,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             >
               {config.provider === 'gemini' ? (
                 <>
+                  <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (Preview)</option>
                   <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
                   <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                   <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>

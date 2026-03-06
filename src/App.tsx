@@ -125,6 +125,7 @@ function App() {
                     documentText: context.documentText,
                   });
 
+                  useFmedaStore.getState().setSelectedId(null);
                   setCurrentView('table');
                 }}
                 onCancel={() => setCurrentView('home')}

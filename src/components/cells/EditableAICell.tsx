@@ -275,12 +275,28 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
               )}
             </div>
 
-            {/* Editor footer: AI button + keyboard hints */}
-            <div className="flex items-center justify-between gap-2">
+            {/* Editor footer: AI button + keyboard hints + save button */}
+            <div className="flex items-center justify-between gap-2 mt-1">
               {renderAITrigger()}
-              <div className="text-[10px] text-gray-400 flex gap-2">
-                <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">Esc</kbd> cancel</span>
-                <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">{multiline ? 'Ctrl+↵' : '↵'}</kbd> save</span>
+              <div className="flex items-center gap-3">
+                <div className="text-[10px] text-gray-400 hidden sm:flex gap-2">
+                  <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">Esc</kbd> cancel</span>
+                  <span><kbd className="px-1 py-0.5 rounded bg-gray-100 text-gray-500 font-mono text-[9px]">{multiline ? 'Ctrl+↵' : '↵'}</kbd> save</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    if (value !== initialValue) {
+                      onSave(value);
+                    }
+                    setShowSuggestions(false);
+                    setIsOpen(false);
+                  }}
+                  className="px-3 py-1 bg-blue-600 text-white text-xs font-medium rounded hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  OK
+                </button>
               </div>
             </div>
           </div>

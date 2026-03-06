@@ -7,7 +7,7 @@ import { FmedaSystemDeep, ProjectContext } from '@/types/ai';
 import { useAIStore } from '@/store/aiStore';
 import { generateArchitecture } from '@/services/aiService';
 import { cn } from '@/lib/utils';
-import { AIQuotaBadge } from './AIQuotaBadge';
+import { AILoadingIndicator } from '../ui/AILoadingIndicator';
 
 interface StepArchitectureProps {
   architecture: FmedaSystemDeep[];
@@ -217,7 +217,6 @@ export const StepArchitecture: React.FC<StepArchitectureProps> = ({
           <p className="text-xs text-slate-500 mt-0.5">Define the system → subsystem → component hierarchy.</p>
         </div>
         <div className="flex items-center gap-3">
-          <AIQuotaBadge />
           <button
             type="button"
             onClick={handleGenerate}
@@ -232,6 +231,12 @@ export const StepArchitecture: React.FC<StepArchitectureProps> = ({
 
       {error && (
         <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
+      )}
+
+      {isGenerating && (
+        <div className="py-4">
+          <AILoadingIndicator inline />
+        </div>
       )}
 
       {/* Tree View */}

@@ -32,6 +32,7 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
         const result = await importFromJson(file);
         setNodes(result.nodes);
         useFmedaStore.getState().setProjectContext(result.projectContext);
+        useFmedaStore.getState().setSelectedId(null);
         onImportSuccess();
       } catch (error: any) {
         await confirm({

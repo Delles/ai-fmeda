@@ -6,9 +6,9 @@ import {
 } from 'lucide-react';
 import { FmedaSystemDeep, FmedaFunctionDeep, ProjectContext } from '@/types/ai';
 import { useAIStore } from '@/store/aiStore';
-import { generateFailureModesForFunction, getAIQuota } from '@/services/aiService';
+import { generateFailureModesForFunction } from '@/services/aiService';
 import { cn } from '@/lib/utils';
-import { AIQuotaBadge } from './AIQuotaBadge';
+import { AILoadingIndicator } from '../ui/AILoadingIndicator';
 
 interface StepFailureModesProps {
   architecture: FmedaSystemDeep[];
@@ -98,16 +98,6 @@ export const StepFailureModes: React.FC<StepFailureModesProps> = ({
       setProgress({ current: i + 1, total: ref.functions.length, label: func.name });
 
       try {
-        const quota = getAIQuota();
-        if (quota.minuteRemaining === 0) {
-          setError('Rate limit reached. Please wait 1 minute then try again.');
-          break;
-        }
-        if (quota.dayRemaining === 0) {
-          setError('Daily limit reached. Progress has been saved.');
-          break;
-        }
-
         const failureModes = await generateFailureModesForFunction(
           config, projectContext,
           ref.systemName, ref.subsystemName, ref.componentName, func.name
@@ -119,10 +109,6 @@ export const StepFailureModes: React.FC<StepFailureModesProps> = ({
         onUpdateArchitecture(JSON.parse(JSON.stringify(updated)));
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Generation failed';
-        if (msg.includes('Rate limit') || msg.includes('Daily limit')) {
-          setError(msg + ' Progress saved.');
-          break;
-        }
         console.error(`Failed for function ${func.name}:`, msg);
       }
     }
@@ -149,7 +135,6 @@ export const StepFailureModes: React.FC<StepFailureModesProps> = ({
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">Generate failure modes now or add them later during analysis.</p>
         </div>
-        <AIQuotaBadge />
       </div>
 
       {error && (
@@ -296,17 +281,8 @@ export const StepFailureModes: React.FC<StepFailureModesProps> = ({
           )}
 
           {isGenerating && (
-            <div className="space-y-2">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                <div className="flex items-center justify-between text-xs text-blue-700 mb-1.5">
-                  <span className="font-medium">Processing: {progress?.label}</span>
-                  <span className="font-semibold">{progress?.current}/{progress?.total} functions</span>
-                </div>
-                <div className="w-full h-2 bg-blue-200 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                    style={{ width: `${progress ? (progress.current / progress.total) * 100 : 0}%` }} />
-                </div>
-              </div>
+            <div className="space-y-3">
+              <AILoadingIndicator progress={progress} inline />
               <button type="button" onClick={handleStop}
                 className="flex items-center gap-2 px-3 py-1.5 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-xs font-semibold transition-colors">
                 <Square className="w-3 h-3" /> Stop & Keep Progress
