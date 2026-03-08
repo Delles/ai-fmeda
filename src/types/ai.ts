@@ -6,7 +6,7 @@ export interface AISuggestion {
 
 export interface AIConfig {
   apiKey: string;
-  provider: 'openai' | 'anthropic' | 'gemini';
+  provider: 'gemini';
   model: string;
 }
 

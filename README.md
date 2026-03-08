@@ -1,37 +1,43 @@
-# FMEDA MVP
+# FMEDA AI Analysis
 
-An interactive tool for Functional Safety engineers to perform Failure Modes, Effects, and Diagnostic Analysis (FMEDA) with AI-assisted field suggestions.
+An interactive tool for Functional Safety engineers to perform Failure Modes, Effects, and Diagnostic Analysis (FMEDA) with hierarchical structure and AI-assisted content generation. Built according to ISO 26262 and IEC 61508 principles.
 
 ## Overview
 
-FMEDA MVP simplifies the process of analyzing hardware components for functional safety. It provides a structured table for documenting failure modes and uses AI to suggest content based on technical documentation you upload.
+FMEDA AI Analysis streamlines the safety analysis process. Unlike traditional flat tables, it uses a hierarchical model (System → Subsystem → Component → Function → Failure Mode) to provide better context for both engineers and AI models. It leverages Google Gemini to suggest failure modes, effects, and diagnostic metrics based on your technical documentation.
 
 ### Key Features
 
-- **Interactive FMEDA Table**: Manage components, failure modes, and effects in a responsive grid.
-- **AI-Powered Suggestions**: Get intelligent suggestions for FMEDA fields using OpenAI's GPT models.
-- **Local Document Context**: Upload PDF or TXT technical specifications to provide context for AI suggestions.
-- **Data Portability**: Export your analysis to JSON and import it back later.
-- **Privacy First**: API keys and data are stored locally in your browser's `LocalStorage`.
+- **Hierarchical Safety Architecture**: Organize your analysis from high-level systems down to individual failure modes.
+- **AI Project Wizard**: Automatically build a project skeleton from technical specifications or plain text concepts.
+- **Context-Aware AI Suggestions**: Get intelligent suggestions for failure modes, local effects, safety mechanisms, and metrics (FIT, DC) that understand the component's function.
+- **Interactive Data Table**: High-performance grid with inline cell editing, auto-save, and keyboard accessibility.
+- **Local Document Support**: Parse PDF or TXT technical specifications locally using PDF.js to provide context for AI.
+- **Data Portability**: Export/Import JSON files with automatic migration from legacy flat formats.
+- **Privacy Centric**: API keys and project data are stored locally in your browser's Secure Storage/LocalStorage.
 
 ## Prerequisites
 
 - [Bun](https://bun.sh/) (v1.0.0 or higher)
+- Google AI (Gemini) API Key
 
 ## Installation
 
-1. **Clone the repository** (or download the source):
+1. **Clone the repository**:
+
    ```bash
    git clone <repository-url>
    cd fmeda
    ```
 
 2. **Install dependencies**:
+
    ```bash
    bun install
    ```
 
 3. **Start the development server**:
+
    ```bash
    bun dev
    ```
@@ -42,37 +48,39 @@ FMEDA MVP simplifies the process of analyzing hardware components for functional
 ## User Guide
 
 ### 1. AI Configuration
-To use the AI suggestion features, you must provide an OpenAI API key:
-1. Click the **Settings** (gear icon) in the top navigation bar.
-2. Enter your **OpenAI API Key**.
-3. Select your preferred model (e.g., `gpt-4o` or `gpt-3.5-turbo`).
-4. Click **Save**. Your key is stored locally and never sent to our servers.
 
-### 2. Loading Context Documents
-The AI provides better suggestions when it has access to your technical documentation:
-1. Use the **Document Upload** section to select a PDF or TXT file.
-2. The application parses the text locally.
-3. Once loaded, the AI will use this text as context for any suggestions you request.
+To unlock AI features, you need a Google Gemini API Key:
 
-### 3. Managing FMEDA Rows
-- **Add Row**: Click the "Add Row" button to create a new entry.
-- **Edit Row**: Click on any cell to edit its content directly.
-- **AI Suggestions**: Click the "AI" button next to a field (e.g., Failure Mode, Local Effect) to open the suggestion panel. Choose a suggestion to apply it to the row.
-- **Delete Row**: Use the delete icon at the end of a row to remove it.
+1. Click the **Settings** (gear icon) in the header.
+2. Enter your **Google Gemini API Key**.
+3. Select your preferred model (e.g., `gemini-1.5-flash`).
+4. Click **Save**. Your key is remains local to your browser.
+
+### 2. Creating a Project
+
+- **AI Wizard**: Click "Start New Project" on the Home page. Enter your project details or upload a datasheet. The AI will guide you through generating systems, subsystems, components, and functions.
+- **Manual Setup**: You can also build your hierarchy manually within the table by adding child rows to components or functions.
+
+### 3. Analyzing Failure Modes
+
+- **Inline Editing**: Click any cell to edit. Changes are saved automatically on blur or Enter.
+- **AI Refinement**: Use the "AI" icon in a Failure Mode row to have Gemini refine the entire row's technical details (Local Effect, Safety Mechanism, DC, etc.) based on the parent component's function.
+- **Contextual Suggestions**: Open the suggestion popover on specific fields to choose from multiple AI-generated options.
 
 ### 4. Export and Import
-- **Export**: Click the **Export JSON** button to download your current FMEDA table as a `.json` file.
-- **Import**: Click the **Import JSON** button and select a previously exported file to restore your work.
+
+- Use the **Export** button to save your work as a `.json` file.
+- The **Import** feature supports both the current hierarchical format and "Legacy Flat JSON" from older versions, automatically nesting data into the new structure.
 
 ## Technical Stack
 
-- **Frontend**: React 18, Vite
-- **Styling**: Tailwind CSS, Lucide Icons
-- **State Management**: Zustand
-- **Table Engine**: TanStack Table (v8)
-- **PDF Parsing**: pdfjs-dist
-- **AI Integration**: OpenAI API (Chat Completions)
-- **Runtime**: Bun
+- **Runtime**: [Bun](https://bun.sh/)
+- **Frontend**: [React 18](https://reactjs.org/), [Vite](https://vitejs.dev/)
+- **UI & Styling**: [Tailwind CSS](https://tailwindcss.com/), [Shadcn UI](https://ui.shadcn.com/), [Lucide Icons](https://lucide.dev/)
+- **State Management**: [Zustand](https://github.com/pmndrs/zustand)
+- **Table Engine**: [TanStack Table v8](https://tanstack.com/table/v8)
+- **AI Integration**: [Google Generative AI (Gemini)](https://ai.google.dev/)
+- **PDF Parsing**: [PDF.js](https://mozilla.github.io/pdf.js/)
 
 ## License
 

@@ -1,14 +1,14 @@
 import React from 'react';
 import { useFmedaStore } from '../store/fmedaStore';
 import { FmedaNodeType } from '../types/fmeda';
-import { 
-  ChevronRight, 
-  ChevronDown, 
-  Layers, 
-  Box, 
-  Cpu, 
-  Activity, 
-  AlertTriangle 
+import {
+  ChevronRight,
+  ChevronDown,
+  Layers,
+  Box,
+  Cpu,
+  Activity,
+  AlertTriangle
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -54,7 +54,7 @@ const TreeItem: React.FC<TreeItemProps> = ({ nodeId, level }) => {
         style={{ paddingLeft: `${level * 12 + 8}px` }}
         onClick={() => setSelectedId(nodeId)}
       >
-        <div 
+        <div
           className="w-4 h-4 mr-1 flex items-center justify-center flex-shrink-0"
           onClick={(e) => {
             if (hasChildren) {
@@ -71,7 +71,7 @@ const TreeItem: React.FC<TreeItemProps> = ({ nodeId, level }) => {
         {/* FIX #4: Add title for native tooltip on truncated names */}
         <span className="text-sm font-medium truncate" title={node.name}>{node.name}</span>
       </div>
-      
+
       {isExpanded && hasChildren && (
         <div className="mt-0.5">
           {node.childIds.map((childId) => (
@@ -85,12 +85,12 @@ const TreeItem: React.FC<TreeItemProps> = ({ nodeId, level }) => {
 
 export const SidebarLeft: React.FC = () => {
   const { nodes } = useFmedaStore();
-  
+
   // Find root nodes (nodes without a parentId)
   const rootNodes = Object.values(nodes).filter(node => !node.parentId);
 
   return (
-    <aside className="w-64 border-r border-gray-200 bg-white flex flex-col h-full overflow-hidden">
+    <aside className="w-80 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-gray-100">
         <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Hierarchy</h2>
       </div>

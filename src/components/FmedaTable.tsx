@@ -11,17 +11,13 @@ import {
 import {
   Trash2,
   Plus,
-  Download,
-  ChevronDown,
   ChevronRight,
+  ChevronDown,
   Layers,
   Box,
   Cpu,
   Activity,
   AlertTriangle,
-  FileJson,
-  FileCode,
-  FileSpreadsheet,
   Sparkles,
   Pencil,
   Loader2,
@@ -37,12 +33,9 @@ import {
   generateComponentsForSubsystem,
   generateSystems
 } from '../services/aiService';
-import { exportToJson } from '../utils/export';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { EditableTextCell } from './cells/EditableTextCell';
 import { EditableNumberCell } from './cells/EditableNumberCell';
 import { EditableAICell } from './cells/EditableAICell';
-import { DocumentUpload } from './DocumentUpload';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatAIError } from '../lib/errorUtils';
 import { generateId } from '../utils/id';
@@ -190,10 +183,6 @@ export const FmedaTable: React.FC = () => {
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<ExpandedState>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
-
-  const handleExport = () => {
-    exportToJson(Object.values(nodes), useFmedaStore.getState().projectContext);
-  };
 
   const handleDelete = async (row: Row<FmedaNode>) => {
     const original = row.original;
@@ -818,18 +807,67 @@ export const FmedaTable: React.FC = () => {
   const componentCount = allNodes.filter(n => n.type === 'Component').length;
   const functionCount = allNodes.filter(n => n.type === 'Function').length;
   const failureModeCount = allNodes.filter(n => n.type === 'FailureMode').length;
-  const failureModes = allNodes.filter(n => n.type === 'FailureMode');
-  const totalSystemFit = failureModes.reduce((sum, fm) => sum + (fm.fitRate || 0), 0);
-  const avgSystemDc = failureModes.length > 0
-    ? failureModes.reduce((sum, fm) => sum + (fm.diagnosticCoverage || 0), 0) / failureModes.length
-    : 0;
-  const dangerousCount = failureModes.filter(fm => fm.classification === 'Dangerous').length;
 
   const selectedNode = selectedId ? nodes[selectedId] : null;
+
+  const getSubFailureModes = (node: FmedaNode): FmedaNode[] => {
+    if (node.type === 'FailureMode') return [node];
+    return node.childIds.flatMap(id => nodes[id] ? getSubFailureModes(nodes[id]) : []);
+  };
+
+  const contextFailureModes = selectedNode
+    ? getSubFailureModes(selectedNode)
+    : allNodes.filter(n => n.type === 'FailureMode');
+
+  const contextTotalFit = selectedNode
+    ? (selectedNode.type === 'FailureMode' ? selectedNode.fitRate : selectedNode.totalFit) || 0
+    : contextFailureModes.reduce((sum, fm) => sum + (fm.fitRate || 0), 0);
+
+  const contextDangerousCount = contextFailureModes.filter(fm => fm.classification === 'Dangerous').length;
+
+  const contextAvgDc = selectedNode
+    ? (selectedNode.type === 'FailureMode'
+        ? (selectedNode.classification === 'Safe' ? 1 : (selectedNode.diagnosticCoverage || 0))
+        : (selectedNode.avgDc || 0))
+    : (contextFailureModes.length > 0
+      ? (contextFailureModes.reduce((sum, fm) => sum + (fm.classification === 'Dangerous' ? (fm.fitRate || 0) : 0), 0) > 0
+          ? contextFailureModes.reduce((sum, fm) => sum + (fm.classification === 'Dangerous' ? ((fm.diagnosticCoverage || 0) * (fm.fitRate || 0)) : 0), 0) /
+            contextFailureModes.reduce((sum, fm) => sum + (fm.classification === 'Dangerous' ? (fm.fitRate || 0) : 0), 0)
+          : 1)
+      : 0);
+
   const pageTitle = selectedNode ? selectedNode.name : 'Full System Analysis';
-  const pageSubtitle = selectedNode
-    ? `${NODE_TYPE_CONFIG[selectedNode.type]?.label} — ${selectedNode.childIds.length} children`
-    : `${componentCount} Components • ${functionCount} Functions • ${failureModeCount} Failure Modes`;
+  const renderSubtitle = () => {
+    if (!selectedNode) {
+      return (
+        <div className="flex items-center gap-1.5 text-sm text-gray-500 mt-1">
+          <span><strong className="text-gray-700 font-medium">{componentCount}</strong> Components</span>
+          <span className="text-gray-300">•</span>
+          <span><strong className="text-gray-700 font-medium">{functionCount}</strong> Functions</span>
+          <span className="text-gray-300">•</span>
+          <span><strong className="text-gray-700 font-medium">{failureModeCount}</strong> Failure Modes</span>
+        </div>
+      );
+    }
+
+    if (selectedNode.type === 'FailureMode') {
+      return <div className="text-sm text-gray-500 mt-0.5 font-medium">Failure Mode</div>;
+    }
+
+    const nextType = getNextNodeType(selectedNode.type);
+    const nextTypeLabel = nextType ? NODE_TYPE_CONFIG[nextType]?.label : 'Item';
+    const childCount = selectedNode.childIds.length;
+
+    return (
+      <div className="flex items-center gap-1.5 text-sm mt-0.5">
+        <span className="text-gray-500 font-medium">{NODE_TYPE_CONFIG[selectedNode.type]?.label}</span>
+        <span className="text-gray-300">•</span>
+        <span className="text-gray-500">
+          <strong className="text-gray-700 font-semibold">{childCount}</strong> {nextTypeLabel}{childCount !== 1 ? 's' : ''}
+        </span>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-0 relative">
@@ -847,238 +885,326 @@ export const FmedaTable: React.FC = () => {
         </div>
       )}
 
-      {/* ── Page Header Section ── */}
-      <div className="pb-3 mb-3 border-b border-gray-100 sticky top-0 z-30 bg-white/95 backdrop-blur-sm pt-2 -mt-2">
-        {/* Row 1: Title + KPI Badges */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              {selectedNode && (
-                <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100">
-                  {NODE_TYPE_CONFIG[selectedNode.type]?.icon}
-                </span>
-              )}
-              <div>
-                <h2 className="text-lg font-bold text-gray-900 leading-tight truncate">
-                  {pageTitle}
-                </h2>
-                <p className="text-xs text-gray-500 mt-0.5">{pageSubtitle}</p>
-              </div>
-            </div>
-            {/* Breadcrumb navigation — own row */}
-            <div className="mt-2">
-              <HierarchyBreadcrumb selectedId={selectedId} />
+      {/* ── Page Header & Action Bar Section ── */}
+      <div className="pb-4 mb-4 border-b border-gray-200 sticky top-0 z-30 bg-white/95 backdrop-blur-md pt-3 -mt-3 shadow-sm flex flex-col gap-3">
+        {/* Top Row: Breadcrumb */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <HierarchyBreadcrumb selectedId={selectedId} />
+          </div>
+        </div>
+
+        {/* Bottom Row: Title + Subtitle and Actions */}
+        <div className="flex flex-wrap items-end justify-between gap-4 w-full">
+          {/* Icon & Title */}
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            {selectedNode && (
+              <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 shadow-sm shrink-0 [&>svg]:w-5 [&>svg]:h-5">
+                {NODE_TYPE_CONFIG[selectedNode.type]?.icon}
+              </span>
+            )}
+            <div className="min-w-0">
+              <h2 className="text-2xl font-bold text-gray-900 leading-tight tracking-tight truncate">
+                {pageTitle}
+              </h2>
+              {renderSubtitle()}
             </div>
           </div>
 
-          {/* KPI Summary Badges — right side of header */}
-          {failureModeCount > 0 && (
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-xs">
-                <span className="text-gray-500 font-medium">Total FIT</span>
-                <span className={cn(
-                  "font-bold font-mono",
-                  totalSystemFit > 100 ? "text-red-600" : totalSystemFit >= 10 ? "text-orange-600" : "text-gray-700"
-                )}>
-                  {totalSystemFit.toFixed(1)}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-xs">
-                <span className="text-gray-500 font-medium">Avg DC</span>
-                <span className={cn(
-                  "font-bold font-mono",
-                  avgSystemDc * 100 < 60 ? "text-red-600" : avgSystemDc * 100 < 90 ? "text-amber-600" : "text-emerald-600"
-                )}>
-                  {(avgSystemDc * 100).toFixed(1)}%
-                </span>
-              </div>
-              {dangerousCount > 0 && (
-                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-red-50 border border-red-200 text-xs">
-                  <AlertTriangle className="w-3 h-3 text-red-500" />
-                  <span className="text-red-700 font-bold">{dangerousCount} Dangerous</span>
+          {/* Actions */}
+          <div className="flex items-center gap-3 shrink-0">
+            {(failureModeCount > 0 || (selectedNode && selectedNode.type === 'FailureMode')) && (
+              <div className="flex items-center gap-2 flex-shrink-0 animate-in fade-in duration-300 mr-2">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-sm shadow-sm transition-all hover:shadow hover:bg-white">
+                  <span className="text-gray-500 font-medium tracking-tight">Total FIT</span>
+                  <span className={cn(
+                    "font-bold font-mono",
+                    contextTotalFit > 100 ? "text-red-600" : contextTotalFit >= 10 ? "text-orange-600" : "text-gray-700"
+                  )}>
+                    {contextTotalFit.toFixed(1)}
+                  </span>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── Action Bar (separated from header) ── */}
-      <div className="flex items-center justify-between gap-3 pb-3">
-        {/* Left: Document & Data Management */}
-        <div className="flex items-center gap-2">
-          <DocumentUpload />
-
-          {(!selectedId || (nodes[selectedId] && getNextNodeType(nodes[selectedId].type))) && (
-            <button
-              onClick={handleBulkGenerate}
-              disabled={isAiLoading}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 text-white rounded-md shadow-sm transition-all text-xs font-semibold focus:outline-none focus:ring-2",
-                isAiLoading
-                  ? "bg-purple-400 cursor-not-allowed"
-                  : "bg-purple-600 hover:bg-purple-700 focus:ring-purple-500/20"
-              )}
-            >
-              {isAiLoading && !loadingNodeId ? (
-                <Loader2 size={14} className="animate-spin" />
-              ) : (
-                <Sparkles size={14} />
-              )}
-              <span>
-                {isAiLoading && !loadingNodeId
-                  ? `Generating ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}...`
-                  : `Generate ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}`}
-              </span>
-            </button>
-          )}
-
-          <div className="w-px h-5 bg-gray-200 mx-0.5" />
-
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                className="flex items-center gap-1.5 text-gray-600 px-2.5 py-1.5 rounded-md border border-gray-200 bg-white hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                title="Save As"
-              >
-                <Download size={14} />
-                <span>Save As</span>
-                <ChevronDown size={14} className="text-gray-400" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent align="start" className="w-52 p-1.5 border border-gray-200 shadow-lg rounded-xl">
-              <div className="flex flex-col gap-0.5">
-                <button
-                  onClick={handleExport}
-                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-blue-50 hover:text-blue-700 rounded-lg transition-colors text-left"
-                >
-                  <FileJson size={16} className="text-blue-500 shrink-0" />
-                  <span>JSON File</span>
-                </button>
-                <button
-                  disabled
-                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-400 cursor-not-allowed rounded-lg text-left"
-                  title="Coming Soon"
-                >
-                  <FileCode size={16} className="shrink-0" />
-                  <span>XML File (Soon)</span>
-                </button>
-                <button
-                  disabled
-                  className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-400 cursor-not-allowed rounded-lg text-left"
-                  title="Coming Soon"
-                >
-                  <FileSpreadsheet size={16} className="shrink-0" />
-                  <span>CSV / Excel (Soon)</span>
-                </button>
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200 text-sm shadow-sm transition-all hover:shadow hover:bg-white">
+                  <span className="text-gray-500 font-medium tracking-tight">Avg DC</span>
+                  <span className={cn(
+                    "font-bold font-mono",
+                    contextAvgDc * 100 < 60 ? "text-red-600" : contextAvgDc * 100 < 90 ? "text-amber-600" : "text-emerald-600"
+                  )}>
+                    {(contextAvgDc * 100).toFixed(1)}%
+                  </span>
+                </div>
+                {contextDangerousCount > 0 && (
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 border border-red-200 text-sm shadow-sm">
+                    <AlertTriangle className="w-4 h-4 text-red-500" />
+                    <span className="text-red-700 font-bold">{contextDangerousCount} Dangerous</span>
+                  </div>
+                )}
               </div>
-            </PopoverContent>
-          </Popover>
+            )}
+
+            {(!selectedId || (nodes[selectedId] && getNextNodeType(nodes[selectedId].type))) && (
+              <button
+                onClick={handleBulkGenerate}
+                disabled={isAiLoading}
+                className={cn(
+                  "flex items-center gap-1.5 px-3.5 py-2 text-white rounded-lg shadow-sm transition-all text-sm font-semibold focus:outline-none focus:ring-2",
+                  isAiLoading
+                    ? "bg-purple-400 cursor-not-allowed"
+                    : "bg-purple-600 hover:bg-purple-700 active:bg-purple-800 focus:ring-purple-500/20"
+                )}
+              >
+                {isAiLoading && !loadingNodeId ? (
+                  <Loader2 size={16} className="animate-spin" />
+                ) : (
+                  <Sparkles size={16} />
+                )}
+                <span>
+                  {isAiLoading && !loadingNodeId
+                    ? `Generating ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}...`
+                    : `Generate ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}`}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
-      <div className="overflow-x-auto border border-gray-200 rounded-lg shadow-sm">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id}>
-                {headerGroup.headers.map((header, i) => (
-                  <th
-                    key={header.id}
-                    className={cn(
-                      "px-2 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider",
-                      i === 0 ? "w-[25%]" : "",
-                      i === 1 || i === 2 ? "w-[22%]" : "",
-                      i === 3 || i === 4 ? "w-[10%]" : "",
-                      i === 5 ? "w-[11%]" : "",
-                    )}
-                  >
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-100" onKeyDown={handleTableKeyDown}>
-            {table.getRowModel().rows.length > 0 ? (
-              table.getRowModel().rows.map((row, rowIndex) => {
-                const isPlaceholder = row.original.id.startsWith('placeholder-');
+      {/* Main Content Area */}
+      {selectedNode && selectedNode.type === 'FailureMode' ? (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden flex flex-col mt-4">
+          <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
+             <div className="font-semibold text-gray-800 text-sm uppercase tracking-wider">Failure Mode Details</div>
+             <button
+                onClick={() => handleRowAiEdit({ original: selectedNode } as any)}
+                disabled={isAiLoading}
+                className={cn(
+                  "px-3 py-1.5 rounded-md text-sm font-semibold transition-all flex items-center gap-1.5 shadow-sm",
+                  isAiLoading ? "bg-purple-300 text-white cursor-not-allowed" : "bg-purple-600 text-white hover:bg-purple-700"
+                )}
+             >
+                {loadingNodeId === selectedNode.id ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Sparkles size={14} />
+                )}
+                Refine with AI
+             </button>
+          </div>
+          <div className="p-8 space-y-8 max-w-5xl">
+            {/* Name */}
+            <div>
+              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Failure Mode Name</label>
+              <div className="border border-gray-200 rounded-lg bg-gray-50/50 overflow-hidden shadow-sm">
+                <EditableTextCell
+                  initialValue={selectedNode.name}
+                  onSave={(val) => updateNode(selectedNode.id, { name: val })}
+                  multiline
+                  className="text-base font-medium px-4 py-3"
+                />
+              </div>
+            </div>
 
-                if (isPlaceholder) {
+            <div className="grid grid-cols-2 gap-8">
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Local Effect</label>
+                <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/50 shadow-sm min-h-[120px]">
+                  <EditableAICell
+                    initialValue={selectedNode.localEffect || ''}
+                    onSave={(val) => updateNode(selectedNode.id, { localEffect: val })}
+                    aiContext={getAiContext({ original: selectedNode } as any)}
+                    field="localEffect"
+                    multiline
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Safety Mechanism</label>
+                <div className="border border-gray-200 rounded-lg p-3 bg-gray-50/50 shadow-sm min-h-[120px]">
+                  <EditableAICell
+                    initialValue={selectedNode.safetyMechanism || ''}
+                    onSave={(val) => updateNode(selectedNode.id, { safetyMechanism: val })}
+                    aiContext={getAiContext({ original: selectedNode } as any)}
+                    field="safetyMechanism"
+                    multiline
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-6 pt-4 border-t border-gray-100">
+              {/* Classification */}
+              <div>
+                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Classification</label>
+                 <select
+                   value={selectedNode.classification || 'Safe'}
+                   onChange={(e) => updateNode(selectedNode.id, { classification: e.target.value as 'Safe' | 'Dangerous' })}
+                   className={cn(
+                     "w-full px-3 py-2.5 bg-white border border-gray-200 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm transition-all text-gray-700",
+                     selectedNode.classification === 'Dangerous' ? "border-red-300 bg-red-50 text-red-800" : ""
+                   )}
+                 >
+                   <option value="Safe">Safe</option>
+                   <option value="Dangerous">Dangerous</option>
+                 </select>
+              </div>
+              {/* DC */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Diagnostic Coverage</label>
+                <div className={cn(
+                  "border border-gray-200 rounded-lg bg-gray-50/50 px-3 py-1.5 shadow-sm transition-all focus-within:ring-2 focus-within:ring-blue-500",
+                  (selectedNode.diagnosticCoverage || 0) * 100 < 60 ? "border-red-300 bg-red-50 text-red-800 focus-within:ring-red-500" :
+                  (selectedNode.diagnosticCoverage || 0) * 100 < 90 ? "border-amber-300 bg-amber-50 text-amber-800 focus-within:ring-amber-500" : ""
+                )}>
+                  <EditableNumberCell
+                     initialValue={(selectedNode.diagnosticCoverage || 0) * 100}
+                     onSave={(val) => updateNode(selectedNode.id, { diagnosticCoverage: val / 100 })}
+                     format={(val) => `${val.toFixed(1)}%`}
+                     min={0}
+                     max={100}
+                     step={0.1}
+                     className="bg-transparent font-medium"
+                  />
+                </div>
+              </div>
+              {/* FIT Rate */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">FIT Rate</label>
+                <div className={cn(
+                  "border border-gray-200 rounded-lg bg-gray-50/50 px-3 py-1.5 shadow-sm transition-all focus-within:ring-2 focus-within:ring-blue-500",
+                  (selectedNode.fitRate || 0) > 100 ? "border-red-300 bg-red-50 text-red-800 focus-within:ring-red-500" :
+                  (selectedNode.fitRate || 0) >= 10 ? "border-orange-300 bg-orange-50 text-orange-800 focus-within:ring-orange-500" : ""
+                )}>
+                   <EditableNumberCell
+                      initialValue={selectedNode.fitRate || 0}
+                      onSave={(val) => updateNode(selectedNode.id, { fitRate: val })}
+                      min={0}
+                      step={0.1}
+                      className="bg-transparent font-medium"
+                   />
+                </div>
+              </div>
+
+              {/* Computed fields */}
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider block mb-2">Safe FIT / Dangerous FIT</label>
+                <div className="flex items-center gap-2 h-10">
+                  <div className="flex-1 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-sm font-bold shadow-sm text-center">
+                    {(selectedNode.safeFit || 0).toFixed(1)}
+                  </div>
+                  <div className="text-gray-400">/</div>
+                  <div className="flex-1 px-3 py-2 bg-red-50 text-red-700 border border-red-200 rounded-md text-sm font-bold shadow-sm text-center">
+                    {(selectedNode.dangerousFit || 0).toFixed(1)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      ) : (
+        <div className="overflow-x-auto border border-gray-200 rounded-lg shadow-sm">
+          {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+              {table.getHeaderGroups().map((headerGroup) => (
+                <tr key={headerGroup.id}>
+                  {headerGroup.headers.map((header, i) => (
+                    <th
+                      key={header.id}
+                      className={cn(
+                        "px-2 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider",
+                        i === 0 ? "w-[25%]" : "",
+                        i === 1 || i === 2 ? "w-[22%]" : "",
+                        i === 3 || i === 4 ? "w-[10%]" : "",
+                        i === 5 ? "w-[11%]" : "",
+                      )}
+                    >
+                      {header.isPlaceholder
+                        ? null
+                        : flexRender(header.column.columnDef.header, header.getContext())}
+                    </th>
+                  ))}
+                </tr>
+              ))}
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-100" onKeyDown={handleTableKeyDown}>
+              {table.getRowModel().rows.length > 0 ? (
+                table.getRowModel().rows.map((row, rowIndex) => {
+                  const isPlaceholder = row.original.id.startsWith('placeholder-');
+
+                  if (isPlaceholder) {
+                    const typeConfig = NODE_TYPE_CONFIG[row.original.type];
+
+                    return (
+                      <tr
+                        key={row.id}
+                        className="transition-all border-b border-gray-100 bg-gray-50/20"
+                      >
+                        <td
+                          colSpan={6}
+                          className={cn(
+                            "px-2 py-2 text-sm",
+                            typeConfig && "border-l-[4px]",
+                            typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-')
+                          )}
+                        >
+                          <button
+                            onClick={() => {
+                              const parent = row.original.parentId ? nodes[row.original.parentId] : null;
+                              if (parent) handleAddChild(parent);
+                            }}
+                            className="flex items-center gap-2 text-blue-500/80 hover:text-blue-700 font-medium transition-all px-3 py-2 rounded-md hover:bg-white w-[85%] text-left border border-blue-50 hover:border-blue-200 hover:shadow-sm"
+                            style={{ marginLeft: `${row.depth * 1.25 + 1.25}rem` }}
+                          >
+                            <Plus size={15} className="shrink-0" />
+                            <span className="italic">{row.original.name}</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  // FIX #6: Color by node type, not by depth
                   const typeConfig = NODE_TYPE_CONFIG[row.original.type];
+                  const rowClass = typeConfig.rowClass;
 
                   return (
                     <tr
                       key={row.id}
-                      className="transition-all border-b border-gray-100 bg-gray-50/20"
+                      className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
                     >
-                      <td
-                        colSpan={6}
-                        className={cn(
-                          "px-2 py-2 text-sm",
-                          typeConfig && "border-l-[4px]",
-                          typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-')
-                        )}
-                      >
-                        <button
-                          onClick={() => {
-                            const parent = row.original.parentId ? nodes[row.original.parentId] : null;
-                            if (parent) handleAddChild(parent);
-                          }}
-                          className="flex items-center gap-2 text-blue-500/80 hover:text-blue-700 font-medium transition-all px-3 py-2 rounded-md hover:bg-white w-[85%] text-left border border-blue-50 hover:border-blue-200 hover:shadow-sm"
-                          style={{ marginLeft: `${row.depth * 1.25 + 1.25}rem` }}
+                      {row.getVisibleCells().map((cell, colIndex) => (
+                        <td
+                          key={cell.id}
+                          className={cn(
+                            "px-2 py-3 whitespace-normal text-sm relative group/cell",
+                            colIndex === 0 && "border-l-[4px]",
+                            colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
+                          )}
+                          data-row-index={rowIndex}
+                          data-col-index={colIndex}
                         >
-                          <Plus size={15} className="shrink-0" />
-                          <span className="italic">{row.original.name}</span>
-                        </button>
-                      </td>
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
                     </tr>
                   );
-                }
-
-                // FIX #6: Color by node type, not by depth
-                const typeConfig = NODE_TYPE_CONFIG[row.original.type];
-                const rowClass = typeConfig.rowClass;
-
-                return (
-                  <tr
-                    key={row.id}
-                    className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
+                })
+              ) : (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-6 py-14 text-center"
                   >
-                    {row.getVisibleCells().map((cell, colIndex) => (
-                      <td
-                        key={cell.id}
-                        className={cn(
-                          "px-2 py-3 whitespace-normal text-sm relative group/cell",
-                          colIndex === 0 && "border-l-[4px]",
-                          colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
-                        )}
-                        data-row-index={rowIndex}
-                        data-col-index={colIndex}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })
-            ) : (
-              <tr>
-                <td
-                  colSpan={6}
-                  className="px-6 py-14 text-center"
-                >
-                  <p className="text-gray-500 font-medium text-sm">{emptyState.title}</p>
-                  <p className="text-gray-400 text-xs mt-1 max-w-xs mx-auto">{emptyState.sub}</p>
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                    <p className="text-gray-500 font-medium text-sm">{emptyState.title}</p>
+                    <p className="text-gray-400 text-xs mt-1 max-w-xs mx-auto">{emptyState.sub}</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,25 +1,50 @@
-import React, { useRef } from 'react';
-import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target, Clock3 } from 'lucide-react';
 import { useFmedaStore } from '../store/fmedaStore';
 import { importFromJson } from '../utils/export';
 import { useConfirm } from '../hooks/useConfirm';
+import { getWizardDraftSummary, type WizardDraftSummary } from '../utils/wizardDraft';
 
 interface HomeProps {
   onNewProject: () => void;
   onImportSuccess: () => void;
 }
 
+const formatSavedAt = (timestamp: number): string => {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    day: 'numeric',
+  }).format(timestamp);
+};
+
 export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => {
   const { nodes, setNodes, projectContext } = useFmedaStore();
   const confirm = useConfirm();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [wizardDraft, setWizardDraft] = useState<WizardDraftSummary | null>(() => getWizardDraftSummary());
+
+  useEffect(() => {
+    const syncDraft = () => {
+      setWizardDraft(getWizardDraftSummary());
+    };
+
+    window.addEventListener('storage', syncDraft);
+    window.addEventListener('focus', syncDraft);
+
+    return () => {
+      window.removeEventListener('storage', syncDraft);
+      window.removeEventListener('focus', syncDraft);
+    };
+  }, []);
 
   const nodesList = Object.values(nodes);
   const hasProject = nodesList.length > 0;
 
-  const componentsCount = nodesList.filter(n => n.type === 'Component').length;
-  const functionsCount = nodesList.filter(n => n.type === 'Function').length;
-  const failureModesCount = nodesList.filter(n => n.type === 'FailureMode').length;
+  const componentsCount = nodesList.filter((n) => n.type === 'Component').length;
+  const functionsCount = nodesList.filter((n) => n.type === 'Function').length;
+  const failureModesCount = nodesList.filter((n) => n.type === 'FailureMode').length;
 
   const handleImportClick = () => {
     fileInputRef.current?.click();
@@ -39,7 +64,7 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
           title: 'Import Failed',
           description: error.message || 'An unexpected error occurred during import.',
           type: 'alert',
-          variant: 'destructive'
+          variant: 'destructive',
         });
       } finally {
         e.target.value = '';
@@ -52,7 +77,6 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
       <h2 className="text-3xl md:text-4xl font-extrabold text-gray-900 mb-10 tracking-tight">
         FMEDA AI Analysis <span className="text-blue-600">Demo</span>
       </h2>
-
 
       {hasProject && (
         <div className="w-full mb-10 text-left">
@@ -124,11 +148,39 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
         </div>
       )}
 
+      {wizardDraft && (
+        <div className="w-full mb-10 text-left">
+          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3 ml-2">Resume Wizard Draft</h3>
+          <div className="bg-white border border-amber-200 rounded-2xl shadow-sm overflow-hidden transition-all hover:shadow-md hover:border-amber-300">
+            <div className="bg-gradient-to-r from-amber-50 to-white border-b border-amber-100 px-6 py-4 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-slate-800 flex items-center">
+                  <Clock3 className="w-5 h-5 mr-3 text-amber-600" />
+                  {wizardDraft.projectName}
+                </h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  Step {wizardDraft.currentStep} of 4, last saved {formatSavedAt(wizardDraft.lastSavedAt)}.
+                </p>
+              </div>
+              <button
+                onClick={onNewProject}
+                className="w-full md:w-auto px-6 py-3 bg-amber-500 text-white font-bold rounded-xl hover:bg-amber-600 transition-colors flex items-center justify-center shadow-sm"
+              >
+                Resume Draft
+                <Zap className="w-5 h-5 ml-2" />
+              </button>
+            </div>
+            <div className="px-6 py-4 text-sm text-slate-600">
+              Local autosave is active for the project wizard. You can resume this draft, or choose <strong>Start Fresh</strong> after opening it.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="w-full text-left mb-3 ml-2">
-         <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Start Fresh</h3>
+        <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Start Fresh</h3>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
-        {/* Create New Project Card */}
         <button
           onClick={onNewProject}
           className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-500 transition-all group"
@@ -145,11 +197,10 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
           <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
             <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> AI-guided setup</li>
             <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Context-aware hierarchy</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Automated failure mode generation</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Automatic local draft saving</li>
           </ul>
         </button>
 
-        {/* Import Project Card */}
         <button
           onClick={handleImportClick}
           className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-emerald-500 transition-all group"

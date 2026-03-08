@@ -12,8 +12,8 @@ export const useAIStore = create<AIState>()(
     (set) => ({
       config: {
         apiKey: '',
-        provider: 'openai',
-        model: 'gpt-4o-mini',
+        provider: 'gemini',
+        model: 'gemini-3.1-flash-lite-preview',
       },
       setConfig: (updates) =>
         set((state) => ({

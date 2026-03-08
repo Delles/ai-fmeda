@@ -102,7 +102,7 @@ export const DocumentUpload: React.FC = () => {
 
       {/* Expandable document list — floats as a dropdown */}
       {isExpanded && docCount > 0 && (
-        <div className="absolute top-full left-0 mt-1 z-30 w-80 bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden">
+        <div className="absolute top-full left-0 mt-1 z-50 w-80 bg-white rounded-lg border border-gray-200 shadow-lg overflow-hidden">
           {error && (
             <div className="px-3 py-2 bg-red-50 border-b border-red-100 flex items-start gap-2 text-red-700 text-xs">
               <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />

@@ -95,45 +95,11 @@ async function callGeminiGeneric<T>(config: AIConfig, prompt: string): Promise<T
   return extractJson(contentText) as T;
 }
 
-async function callOpenAIGeneric<T>(config: AIConfig, prompt: string): Promise<T> {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model || 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are a helpful assistant that provides responses in JSON format.' },
-        { role: 'user', content: prompt },
-      ],
-      response_format: { type: 'json_object' },
-    }),
-  });
-
-  if (!response.ok) {
-    let message = `OpenAI API error (${response.status})`;
-    try {
-      const error = await response.json();
-      message = error.error?.message || message;
-    } catch { /* response is not JSON */ }
-    throw new Error(message);
-  }
-
-  const data = await response.json();
-  const contentText = data.choices[0].message.content;
-
-  return extractJson(contentText) as T;
-}
-
 async function callAIGeneric<T>(config: AIConfig, prompt: string): Promise<T> {
-  if (config.provider === 'openai') {
-    return callOpenAIGeneric<T>(config, prompt);
-  } else if (config.provider === 'gemini') {
+  if (config.provider === 'gemini') {
     return callGeminiGeneric<T>(config, prompt);
   } else {
-    throw new Error(`Provider ${config.provider} not implemented. Please select OpenAI or Google Gemini in settings.`);
+    throw new Error(`Provider ${config.provider} not implemented. Please select Google Gemini in settings.`);
   }
 }
 

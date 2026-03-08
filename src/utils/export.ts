@@ -15,22 +15,51 @@ const getExportFileName = (projectName?: string) => {
 
 /**
  * Exports the flat FMEDA data and project context to a JSON file.
+ * Uses the File System Access API for a native "Save As" experience when available.
  */
-export const exportToJson = (nodes: FmedaNode[], projectContext: ProjectContext | null) => {
+export const exportToJson = async (nodes: FmedaNode[], projectContext: ProjectContext | null): Promise<{success: boolean, fileName?: string}> => {
   const exportData = {
     nodes,
     projectContext: projectContext || {},
   };
 
   const dataStr = JSON.stringify(exportData, null, 2);
-  const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
-
   const exportFileDefaultName = getExportFileName(projectContext?.projectName);
+
+  try {
+    // Check if the File System Access API is supported
+    if ('showSaveFilePicker' in window) {
+      const handle = await (window as any).showSaveFilePicker({
+        suggestedName: exportFileDefaultName,
+        types: [
+          {
+            description: 'JSON File',
+            accept: { 'application/json': ['.json'] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(dataStr);
+      await writable.close();
+      return { success: true, fileName: handle.name };
+    }
+  } catch (err: any) {
+    // If the user aborted the save dialog, just return silently
+    if (err.name !== 'AbortError') {
+      console.error('File-system access API error:', err);
+    }
+    return { success: false };
+  }
+
+  // Fallback for browsers that do not support showSaveFilePicker
+  const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
 
   const linkElement = document.createElement('a');
   linkElement.setAttribute('href', dataUri);
   linkElement.setAttribute('download', exportFileDefaultName);
   linkElement.click();
+
+  return { success: true, fileName: exportFileDefaultName };
 };
 
 /**

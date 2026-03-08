@@ -25,18 +25,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
             </label>
             <select
               value={config.provider}
-              onChange={(e) => {
-                const provider = e.target.value as any;
-                let defaultModel = config.model;
-                if (provider === 'openai') defaultModel = 'gpt-4o-mini';
-                if (provider === 'gemini') defaultModel = 'gemini-3.1-flash-lite-preview';
-                setConfig({ provider, model: defaultModel });
-              }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50 opacity-70 cursor-not-allowed"
             >
-              <option value="openai">OpenAI</option>
               <option value="gemini">Google Gemini</option>
-              <option value="anthropic" disabled>Anthropic (Coming Soon)</option>
             </select>
           </div>
           <div>
@@ -47,7 +39,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               type="password"
               value={config.apiKey}
               onChange={(e) => setConfig({ apiKey: e.target.value })}
-              placeholder={config.provider === 'gemini' ? 'AIza...' : 'sk-...'}
+              placeholder="AIza..."
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <p className="mt-1 text-xs text-gray-500">
@@ -63,23 +55,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ onClose }) => {
               onChange={(e) => setConfig({ model: e.target.value })}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              {config.provider === 'gemini' ? (
-                <>
-                  <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (Preview)</option>
-                  <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                  <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
-                </>
-              ) : config.provider === 'openai' ? (
-                <>
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="gpt-4o-mini">GPT-4o Mini</option>
-                  <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                  <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                </>
-              ) : (
-                <option value={config.model}>{config.model}</option>
-              )}
+              <option value="gemini-3.1-flash-lite-preview">Gemini 3.1 Flash Lite (Preview)</option>
+              <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+              <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+              <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
             </select>
           </div>
         </div>
