@@ -10,7 +10,7 @@ import { SidebarLeft } from './components/SidebarLeft';
 import { isLegacyFormat, migrateLegacyToFlat, flattenDeepHierarchy } from './utils/migration';
 import { DocumentUpload } from './components/DocumentUpload';
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
-import { exportToJson } from './utils/export';
+import { exportToCsv, exportToExcel, exportToJson } from './utils/export';
 import { useAIStore } from './store/aiStore';
 import { Toaster, toast } from 'sonner';
 
@@ -53,18 +53,26 @@ function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
-  const handleExport = async () => {
+  const runExport = async (
+    formatLabel: string,
+    exporter: typeof exportToJson | typeof exportToCsv | typeof exportToExcel
+  ) => {
     try {
-      const result = await exportToJson(Object.values(nodes), useFmedaStore.getState().projectContext);
+      const result = await exporter(Object.values(nodes), useFmedaStore.getState().projectContext);
       if (result && result.success) {
-        toast.success('File saved successfully', {
+        toast.success(`${formatLabel} exported successfully`, {
           description: `Saved as ${result.fileName}`
         });
       }
-    } catch (e) {
-      toast.error('Failed to save file');
+    } catch (error) {
+      const description = error instanceof Error ? error.message : 'Please try again.';
+      toast.error(`Failed to export ${formatLabel}`, { description });
     }
   };
+
+  const handleJsonExport = () => runExport('JSON', exportToJson);
+  const handleCsvExport = () => runExport('CSV', exportToCsv);
+  const handleExcelExport = () => runExport('Excel workbook', exportToExcel);
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
@@ -128,7 +136,7 @@ function App() {
                 <PopoverContent align="end" className="w-48 p-1.5 border border-gray-200 shadow-xl rounded-xl">
                   <div className="flex flex-col gap-0.5">
                     <button
-                      onClick={handleExport}
+                      onClick={handleJsonExport}
                       className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-blue-50 hover:text-blue-700 rounded-lg transition-colors text-left"
                     >
                       <FileJson size={16} className="text-blue-500 shrink-0" />
@@ -142,11 +150,18 @@ function App() {
                       <span>XML File <span className="text-[10px] uppercase ml-1.5 px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-md font-bold tracking-wider">Soon</span></span>
                     </button>
                     <button
-                      disabled
-                      className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-400 cursor-not-allowed rounded-lg text-left border-0 bg-transparent"
+                      onClick={handleCsvExport}
+                      className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors text-left"
                     >
-                      <FileSpreadsheet size={16} className="shrink-0" />
-                      <span>CSV / Excel <span className="text-[10px] uppercase ml-1.5 px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded-md font-bold tracking-wider">Soon</span></span>
+                      <FileSpreadsheet size={16} className="text-emerald-500 shrink-0" />
+                      <span>CSV File</span>
+                    </button>
+                    <button
+                      onClick={handleExcelExport}
+                      className="flex items-center gap-2.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors text-left"
+                    >
+                      <FileSpreadsheet size={16} className="text-emerald-600 shrink-0" />
+                      <span>Excel Workbook</span>
                     </button>
                   </div>
                 </PopoverContent>
