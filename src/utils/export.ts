@@ -1,4 +1,5 @@
 import { FmedaNode, FmedaNodeType, ProjectContext } from '../types/fmeda';
+import { generateId } from './id';
 import { isLegacyFormat, migrateLegacyToFlat } from './migration';
 
 const JSON_MIME = 'application/json';
@@ -807,60 +808,634 @@ export interface ImportResult {
   projectContext: ProjectContext | null;
 }
 
-/**
- * Imports FMEDA data from a JSON file, supporting new flat with context, flat array, and legacy formats.
- */
-export const importFromJson = (file: File): Promise<ImportResult> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const json = JSON.parse(event.target?.result as string);
+type SupportedImportFormat = 'json' | 'csv' | 'xlsx';
 
-        let projectContext: ProjectContext | null = null;
-        let nodesData = json;
+interface FailureModeImportRow {
+  system: string;
+  subsystem: string;
+  component: string;
+  functionName: string;
+  failureMode: string;
+  localEffect: string;
+  safetyMechanism: string;
+  classification: 'Safe' | 'Dangerous';
+  diagnosticCoverage: number;
+  fitRate: number;
+  asil: string;
+  safetyGoal: string;
+  path: string;
+}
 
-        // Check if it's the new format with nodes and projectContext
-        if (!Array.isArray(json) && typeof json === 'object' && json !== null && 'nodes' in json) {
-          nodesData = json.nodes;
-          projectContext = json.projectContext || null;
-        }
+interface WorksheetRecord {
+  [header: string]: string | number | boolean | null;
+}
 
-        if (!Array.isArray(nodesData)) {
-          // Check if it's already a record (Record<string, FmedaNode>)
-          if (typeof nodesData === 'object' && nodesData !== null) {
-            const values = Object.values(nodesData);
-            if (values.length > 0 && values.every(isFmedaNode)) {
-              return resolve({ nodes: nodesData as Record<string, FmedaNode>, projectContext });
-            }
-          }
-          return reject(new Error('Invalid file format: Expected an array or a valid nodes record.'));
-        }
+const SUPPORTED_IMPORT_EXTENSIONS = ['json', 'csv', 'xlsx'] as const;
 
-        if (nodesData.length === 0) {
-          return resolve({ nodes: {}, projectContext });
-        }
-
-        // Check if it's the new flat format (array of nodes)
-        if (nodesData.every(isFmedaNode)) {
-          const nodesRecord: Record<string, FmedaNode> = {};
-          nodesData.forEach((node: FmedaNode) => {
-            nodesRecord[node.id] = node;
-          });
-          return resolve({ nodes: nodesRecord, projectContext });
-        }
-
-        // Check if it's the legacy nested format
-        if (isLegacyFormat(nodesData)) {
-          return resolve({ nodes: migrateLegacyToFlat(nodesData), projectContext });
-        }
-
-        reject(new Error('Invalid FMEDA data format: The file does not match the expected flat or legacy structure.'));
-      } catch (error) {
-        reject(new Error('Failed to parse JSON file.'));
-      }
-    };
-    reader.onerror = () => reject(new Error('Failed to read file.'));
-    reader.readAsText(file);
-  });
+const getFileExtension = (fileName: string): string => {
+  const parts = fileName.toLowerCase().split('.');
+  return parts.length > 1 ? parts.pop() || '' : '';
 };
+
+const inferImportFormat = (file: File): SupportedImportFormat | null => {
+  const extension = getFileExtension(file.name);
+
+  if (extension === 'json' || extension === 'csv' || extension === 'xlsx') {
+    return extension;
+  }
+
+  if (file.type === JSON_MIME) return 'json';
+  if (file.type === XLSX_MIME) return 'xlsx';
+  if (file.type.includes('csv')) return 'csv';
+
+  return null;
+};
+
+const normalizeHeader = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\uFEFF/g, '')
+    .replace(/[%/]/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const normalizeText = (value: unknown): string => {
+  if (value == null) return '';
+
+  if (typeof value === 'string') {
+    return value.replace(/\uFEFF/g, '').trim();
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim();
+  }
+
+  if (typeof value === 'object' && value && 'text' in value && typeof (value as { text?: unknown }).text === 'string') {
+    return ((value as { text: string }).text || '').trim();
+  }
+
+  return String(value).trim();
+};
+
+const normalizeProjectContextValue = (value: string): string | undefined => {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.toLowerCase() === 'not specified') {
+    return undefined;
+  }
+  return trimmed;
+};
+
+const parseNumericCell = (value: unknown, { allowPercent = false }: { allowPercent?: boolean } = {}): number => {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return 0;
+    if (allowPercent && value > 1) return value / 100;
+    return value;
+  }
+
+  const text = normalizeText(value);
+  if (!text) return 0;
+
+  const hasPercent = text.includes('%');
+  const normalized = Number.parseFloat(text.replace(/[^0-9.+-]/g, ''));
+  if (!Number.isFinite(normalized)) return 0;
+
+  if (allowPercent && (hasPercent || normalized > 1)) {
+    return normalized / 100;
+  }
+
+  return normalized;
+};
+
+const normalizeClassification = (value: unknown): 'Safe' | 'Dangerous' => {
+  const text = normalizeText(value).toLowerCase();
+  return text === 'dangerous' ? 'Dangerous' : 'Safe';
+};
+
+const normalizeNodeAsil = (value: unknown): FmedaNode['asil'] => {
+  const text = normalizeText(value).toUpperCase();
+
+  switch (text) {
+    case 'QM':
+      return 'QM';
+    case 'ASIL A':
+      return 'ASIL A';
+    case 'ASIL B':
+      return 'ASIL B';
+    case 'ASIL C':
+      return 'ASIL C';
+    case 'ASIL D':
+      return 'ASIL D';
+    default:
+      return 'QM';
+  }
+};
+
+const readJsonFile = async (file: File): Promise<ImportResult> => {
+  let json: unknown;
+
+  try {
+    json = JSON.parse(await file.text());
+  } catch {
+    throw new Error('Failed to parse JSON file. Please choose a valid FMEDA export.');
+  }
+
+  let projectContext: ProjectContext | null = null;
+  let nodesData = json;
+
+  if (!Array.isArray(json) && typeof json === 'object' && json !== null && 'nodes' in json) {
+    const exportPayload = json as { nodes: unknown; projectContext?: ProjectContext | null };
+    nodesData = exportPayload.nodes;
+    projectContext = exportPayload.projectContext || null;
+  }
+
+  if (!Array.isArray(nodesData)) {
+    if (typeof nodesData === 'object' && nodesData !== null) {
+      const values = Object.values(nodesData);
+      if (values.length === 0 || values.every(isFmedaNode)) {
+        return { nodes: nodesData as Record<string, FmedaNode>, projectContext };
+      }
+    }
+
+    throw new Error('Invalid JSON import format. Expected an FMEDA node array or nodes record.');
+  }
+
+  if (nodesData.length === 0) {
+    return { nodes: {}, projectContext };
+  }
+
+  if (nodesData.every(isFmedaNode)) {
+    const nodesRecord: Record<string, FmedaNode> = {};
+    nodesData.forEach((node: FmedaNode) => {
+      nodesRecord[node.id] = node;
+    });
+    return { nodes: nodesRecord, projectContext };
+  }
+
+  if (isLegacyFormat(nodesData)) {
+    return { nodes: migrateLegacyToFlat(nodesData), projectContext };
+  }
+
+  throw new Error('Invalid FMEDA JSON data. The file does not match the supported flat or legacy project structure.');
+};
+
+const parseCsvText = (text: string): string[][] => {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentValue = '';
+  let insideQuotes = false;
+
+  const normalizedText = text.replace(/^\uFEFF/, '');
+
+  for (let index = 0; index < normalizedText.length; index += 1) {
+    const char = normalizedText[index];
+    const nextChar = normalizedText[index + 1];
+
+    if (insideQuotes) {
+      if (char === '"' && nextChar === '"') {
+        currentValue += '"';
+        index += 1;
+      } else if (char === '"') {
+        insideQuotes = false;
+      } else {
+        currentValue += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      insideQuotes = true;
+      continue;
+    }
+
+    if (char === ',') {
+      currentRow.push(currentValue);
+      currentValue = '';
+      continue;
+    }
+
+    if (char === '\n') {
+      currentRow.push(currentValue);
+      rows.push(currentRow);
+      currentRow = [];
+      currentValue = '';
+      continue;
+    }
+
+    if (char === '\r') {
+      continue;
+    }
+
+    currentValue += char;
+  }
+
+  if (currentValue.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentValue);
+    rows.push(currentRow);
+  }
+
+  return rows;
+};
+
+const getColumnValue = (row: string[], headerIndexes: Record<string, number>, aliases: string[]): string => {
+  for (const alias of aliases) {
+    const index = headerIndexes[normalizeHeader(alias)];
+    if (index != null && index < row.length) {
+      return normalizeText(row[index]);
+    }
+  }
+  return '';
+};
+
+const parseFailureModeRowsFromCsv = (text: string): FailureModeImportRow[] => {
+  const rows = parseCsvText(text).filter((row) => row.some((cell) => normalizeText(cell) !== ''));
+
+  if (rows.length === 0) {
+    throw new Error('The CSV file is empty.');
+  }
+
+  const [headerRow, ...dataRows] = rows;
+  const headerIndexes = Object.fromEntries(headerRow.map((header, index) => [normalizeHeader(header), index]));
+  const requiredColumns = ['Failure Mode', 'Classification', 'FIT Rate'];
+  const missingColumns = requiredColumns.filter((column) => headerIndexes[normalizeHeader(column)] == null);
+
+  if (missingColumns.length > 0) {
+    throw new Error(`This CSV file is not a supported FMEDA export. Missing required columns: ${missingColumns.join(', ')}.`);
+  }
+
+  if (dataRows.length === 0) {
+    throw new Error('This CSV export contains no failure mode rows to import.');
+  }
+
+  return dataRows.map((row) => ({
+    system: getColumnValue(row, headerIndexes, ['System']),
+    subsystem: getColumnValue(row, headerIndexes, ['Subsystem']),
+    component: getColumnValue(row, headerIndexes, ['Component']),
+    functionName: getColumnValue(row, headerIndexes, ['Function']),
+    failureMode: getColumnValue(row, headerIndexes, ['Failure Mode']),
+    localEffect: getColumnValue(row, headerIndexes, ['Local Effect']),
+    safetyMechanism: getColumnValue(row, headerIndexes, ['Safety Mechanism']),
+    classification: normalizeClassification(getColumnValue(row, headerIndexes, ['Classification'])),
+    diagnosticCoverage: parseNumericCell(
+      getColumnValue(row, headerIndexes, ['Diagnostic Coverage %', 'Diagnostic Coverage']),
+      { allowPercent: true }
+    ),
+    fitRate: parseNumericCell(getColumnValue(row, headerIndexes, ['FIT Rate', 'FIT'])),
+    asil: getColumnValue(row, headerIndexes, ['ASIL']),
+    safetyGoal: getColumnValue(row, headerIndexes, ['Safety Goal']),
+    path: getColumnValue(row, headerIndexes, ['Path']),
+  })).filter((row) => row.failureMode);
+};
+
+const deriveProjectNameFromFileName = (fileName: string): string | undefined => {
+  const baseName = fileName.replace(/\.[^.]+$/, '');
+  const cleaned = baseName
+    .replace(/^fmeda-/, '')
+    .replace(/-\d{4}-\d{2}-\d{2}$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .trim();
+
+  if (!cleaned) return undefined;
+
+  return cleaned.replace(/\b\w/g, (match) => match.toUpperCase());
+};
+
+const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<string, FmedaNode> => {
+  if (rows.length === 0) {
+    throw new Error('No importable failure mode rows were found in the file.');
+  }
+
+  const nodes: Record<string, FmedaNode> = {};
+  const nodeKeys = new Map<string, string>();
+
+  const ensureNode = (
+    type: Exclude<FmedaNodeType, 'FailureMode'>,
+    name: string,
+    parentId: string | null,
+    metadata?: Partial<FmedaNode>
+  ) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return null;
+
+    const key = `${parentId ?? 'root'}|${type}|${trimmedName.toLowerCase()}`;
+    const existingId = nodeKeys.get(key);
+    if (existingId) {
+      if (metadata && (type === 'System' || type === 'Subsystem' || type === 'Component')) {
+        nodes[existingId] = {
+          ...nodes[existingId],
+          asil: nodes[existingId].asil || metadata.asil,
+          safetyGoal: nodes[existingId].safetyGoal || metadata.safetyGoal,
+        };
+      }
+      return existingId;
+    }
+
+    const id = generateId();
+    nodes[id] = {
+      id,
+      name: trimmedName,
+      type,
+      parentId,
+      childIds: [],
+      ...(type === 'System' || type === 'Subsystem' || type === 'Component'
+        ? {
+            asil: metadata?.asil || 'QM',
+            safetyGoal: metadata?.safetyGoal || '',
+          }
+        : {}),
+    };
+
+    if (parentId) {
+      nodes[parentId].childIds.push(id);
+    }
+
+    nodeKeys.set(key, id);
+    return id;
+  };
+
+  rows.forEach((row, index) => {
+    let parentId: string | null = null;
+    const hierarchy = [
+      { type: 'System' as const, name: row.system },
+      { type: 'Subsystem' as const, name: row.subsystem },
+      { type: 'Component' as const, name: row.component },
+      { type: 'Function' as const, name: row.functionName || 'Imported Function' },
+    ];
+
+    hierarchy.forEach(({ type, name }) => {
+      if (!name && type !== 'Function') return;
+
+      const assignContextToThisNode =
+        type === 'Component'
+        || (type === 'Subsystem' && !row.component)
+        || (type === 'System' && !row.component && !row.subsystem);
+
+      const nextParentId = ensureNode(type, name, parentId, assignContextToThisNode
+        ? {
+            asil: normalizeNodeAsil(row.asil),
+            safetyGoal: row.safetyGoal || '',
+          }
+        : undefined);
+
+      if (nextParentId) {
+        parentId = nextParentId;
+      }
+    });
+
+    if (!parentId) {
+      throw new Error(`Row ${index + 2} is missing the hierarchy required to attach failure mode "${row.failureMode}".`);
+    }
+
+    const failureModeId = generateId();
+    nodes[failureModeId] = {
+      id: failureModeId,
+      name: row.failureMode,
+      type: 'FailureMode',
+      parentId,
+      childIds: [],
+      localEffect: row.localEffect,
+      safetyMechanism: row.safetyMechanism,
+      diagnosticCoverage: row.diagnosticCoverage,
+      fitRate: row.fitRate,
+      classification: row.classification,
+    };
+    nodes[parentId].childIds.push(failureModeId);
+  });
+
+  return nodes;
+};
+
+const getWorksheetRecords = (worksheet: any): WorksheetRecord[] => {
+  const headerRow = worksheet.getRow(1);
+  const headers: string[] = [];
+
+  headerRow.eachCell({ includeEmpty: true }, (cell: any, columnNumber: number) => {
+    headers[columnNumber - 1] = normalizeText(cell.value);
+  });
+
+  const records: WorksheetRecord[] = [];
+  for (let rowNumber = 2; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    const record: WorksheetRecord = {};
+    let hasValues = false;
+
+    headers.forEach((header, index) => {
+      if (!header) return;
+      const cellValue = row.getCell(index + 1).value;
+      if (normalizeText(cellValue) !== '') {
+        hasValues = true;
+      }
+      record[header] = typeof cellValue === 'number' || typeof cellValue === 'boolean'
+        ? cellValue
+        : normalizeText(cellValue);
+    });
+
+    if (hasValues) {
+      records.push(record);
+    }
+  }
+
+  return records;
+};
+
+const parseNodeTypeLabel = (value: unknown): FmedaNodeType | null => {
+  const normalized = normalizeText(value).toLowerCase();
+  switch (normalized) {
+    case 'system':
+      return 'System';
+    case 'subsystem':
+      return 'Subsystem';
+    case 'component':
+      return 'Component';
+    case 'function':
+      return 'Function';
+    case 'failure mode':
+      return 'FailureMode';
+    default:
+      return null;
+  }
+};
+
+const parseHierarchyWorksheet = (worksheet: any): Record<string, FmedaNode> => {
+  const rows = getWorksheetRecords(worksheet);
+  if (rows.length === 0) {
+    throw new Error('The Excel hierarchy sheet is empty.');
+  }
+
+  const nodes: Record<string, FmedaNode> = {};
+  const levelStack = new Map<number, string>();
+
+  rows.forEach((row, index) => {
+    const nodeType = parseNodeTypeLabel(row['Node Type']);
+    const name = normalizeText(row.Name || row['Failure Mode']);
+    const level = parseNumericCell(row.Level);
+
+    if (!nodeType || !name) {
+      throw new Error(`The Hierarchy sheet contains an invalid row at line ${index + 2}.`);
+    }
+
+    const parentId = level > 0 ? levelStack.get(level - 1) || null : null;
+    if (level > 0 && !parentId) {
+      throw new Error(`The Hierarchy sheet row for "${name}" has an invalid nesting level.`);
+    }
+
+    const id = generateId();
+    const node: FmedaNode = {
+      id,
+      name,
+      type: nodeType,
+      parentId,
+      childIds: [],
+    };
+
+    if (nodeType === 'FailureMode') {
+      node.localEffect = normalizeText(row['Local Effect']);
+      node.safetyMechanism = normalizeText(row['Safety Mechanism']);
+      node.classification = normalizeClassification(row.Classification);
+      node.diagnosticCoverage = parseNumericCell(row['DC %'], { allowPercent: true });
+      node.fitRate = parseNumericCell(row.FIT);
+    }
+
+    if (nodeType === 'System' || nodeType === 'Subsystem' || nodeType === 'Component') {
+      node.asil = normalizeNodeAsil(row.ASIL);
+      node.safetyGoal = normalizeText(row['Safety Goal']);
+    }
+
+    nodes[id] = node;
+
+    if (parentId) {
+      nodes[parentId].childIds.push(id);
+    }
+
+    levelStack.set(level, id);
+    Array.from(levelStack.keys())
+      .filter((stackLevel) => stackLevel > level)
+      .forEach((stackLevel) => levelStack.delete(stackLevel));
+  });
+
+  return nodes;
+};
+
+const parseFailureModeWorksheet = (worksheet: any): FailureModeImportRow[] => {
+  const rows = getWorksheetRecords(worksheet);
+
+  if (rows.length === 0) {
+    throw new Error('The Excel failure mode sheet is empty.');
+  }
+
+  return rows
+    .map((row) => ({
+      system: normalizeText(row.System),
+      subsystem: normalizeText(row.Subsystem),
+      component: normalizeText(row.Component),
+      functionName: normalizeText(row.Function),
+      failureMode: normalizeText(row['Failure Mode']),
+      localEffect: normalizeText(row['Local Effect']),
+      safetyMechanism: normalizeText(row['Safety Mechanism']),
+      classification: normalizeClassification(row.Classification),
+      diagnosticCoverage: parseNumericCell(row['Diagnostic Coverage'], { allowPercent: true }),
+      fitRate: parseNumericCell(row['FIT Rate']),
+      asil: normalizeText(row.ASIL),
+      safetyGoal: normalizeText(row['Safety Goal']),
+      path: normalizeText(row.Path),
+    }))
+    .filter((row) => row.failureMode);
+};
+
+const parseOverviewContext = (worksheet: any): ProjectContext | null => {
+  if (!worksheet) return null;
+
+  const projectContext: ProjectContext = {
+    projectName: normalizeProjectContextValue(normalizeText(worksheet.getCell('B10').value)),
+    safetyStandard: normalizeProjectContextValue(normalizeText(worksheet.getCell('B11').value)),
+    targetAsil: normalizeProjectContextValue(normalizeText(worksheet.getCell('B12').value)),
+    safetyGoal: normalizeProjectContextValue(normalizeText(worksheet.getCell('B13').value)),
+  };
+
+  return Object.values(projectContext).some(Boolean) ? projectContext : null;
+};
+
+const readExcelFile = async (file: File): Promise<ImportResult> => {
+  const ExcelJS = await import('exceljs');
+  const workbook = new ExcelJS.Workbook();
+
+  try {
+    await workbook.xlsx.load(await file.arrayBuffer());
+  } catch {
+    throw new Error('Failed to read the Excel workbook. Please choose a valid .xlsx export from FMEDA Pro.');
+  }
+
+  const hierarchySheet = workbook.getWorksheet('Hierarchy');
+  const failureModesSheet = workbook.getWorksheet('Failure Modes');
+  const overviewSheet = workbook.getWorksheet('Overview');
+  const projectContext = parseOverviewContext(overviewSheet) || {
+    projectName: deriveProjectNameFromFileName(file.name),
+  };
+
+  let failureModesError: Error | null = null;
+  if (failureModesSheet) {
+    try {
+      const failureModeRows = parseFailureModeWorksheet(failureModesSheet);
+      return {
+        nodes: buildNodesFromFailureModeRows(failureModeRows),
+        projectContext,
+      };
+    } catch (error) {
+      failureModesError = error instanceof Error ? error : new Error('Failed to parse the Excel failure mode sheet.');
+    }
+  }
+
+  let hierarchyError: Error | null = null;
+  if (hierarchySheet) {
+    try {
+      const nodes = parseHierarchyWorksheet(hierarchySheet);
+      return { nodes, projectContext };
+    } catch (error) {
+      hierarchyError = error instanceof Error ? error : new Error('Failed to parse the Excel hierarchy sheet.');
+    }
+  }
+
+  if (failureModesError || hierarchyError) {
+    const details = [failureModesError?.message, hierarchyError?.message]
+      .filter(Boolean)
+      .join(' ');
+    throw new Error(`This Excel file could not be imported. ${details}`.trim());
+  }
+
+  throw new Error('This Excel file is not a supported FMEDA export. Expected a "Hierarchy" or "Failure Modes" worksheet.');
+};
+
+const readCsvFile = async (file: File): Promise<ImportResult> => {
+  const failureModeRows = parseFailureModeRowsFromCsv(await file.text());
+  return {
+    nodes: buildNodesFromFailureModeRows(failureModeRows),
+    projectContext: {
+      projectName: deriveProjectNameFromFileName(file.name),
+    },
+  };
+};
+
+/**
+ * Imports FMEDA data from a JSON, CSV, or Excel export file.
+ */
+export const importProjectFile = async (file: File): Promise<ImportResult> => {
+  const format = inferImportFormat(file);
+
+  if (!format) {
+    throw new Error(`Unsupported file type. Import a ${SUPPORTED_IMPORT_EXTENSIONS.map((extension) => `.${extension}`).join(', ')} file exported from FMEDA Pro.`);
+  }
+
+  switch (format) {
+    case 'json':
+      return readJsonFile(file);
+    case 'csv':
+      return readCsvFile(file);
+    case 'xlsx':
+      return readExcelFile(file);
+    default:
+      throw new Error('Unsupported import format.');
+  }
+};
+
+export const importFromJson = importProjectFile;

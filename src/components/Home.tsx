@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target, Clock3 } from 'lucide-react';
 import { useFmedaStore } from '../store/fmedaStore';
-import { importFromJson } from '../utils/export';
+import { importProjectFile } from '../utils/export';
 import { useConfirm } from '../hooks/useConfirm';
 import { getWizardDraftSummary, type WizardDraftSummary } from '../utils/wizardDraft';
 
@@ -54,7 +54,7 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
     const file = e.target.files?.[0];
     if (file) {
       try {
-        const result = await importFromJson(file);
+        const result = await importProjectFile(file);
         setNodes(result.nodes);
         useFmedaStore.getState().setProjectContext(result.projectContext);
         useFmedaStore.getState().setSelectedId(null);
@@ -212,18 +212,18 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
             <h3 className="text-xl font-bold text-gray-900">Import Existing File</h3>
           </div>
           <p className="text-gray-600 mb-6 flex-grow leading-relaxed">
-            Load a previously exported FMEDA project JSON file to continue your analysis with our inline editing and safety metrics.
+            Load a previously exported FMEDA project JSON, CSV, or Excel file to continue your analysis with inline editing and safety metrics.
           </p>
           <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Fast flat-state loading</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Supports legacy format parsing</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Instantly updates local storage</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Supports FMEDA JSON, CSV, and Excel exports</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Keeps legacy JSON import compatibility</li>
+            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Shows clear errors for unsupported files</li>
           </ul>
           <input
             type="file"
             ref={fileInputRef}
             onChange={handleFileChange}
-            accept=".json"
+            accept=".json,.csv,.xlsx"
             className="hidden"
           />
         </button>
