@@ -1,12 +1,16 @@
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
   createColumnHelper,
   flexRender,
   getCoreRowModel,
+  getFilteredRowModel,
   getExpandedRowModel,
+  getSortedRowModel,
   useReactTable,
   ExpandedState,
+  FilterFn,
   Row,
+  SortingState,
 } from '@tanstack/react-table';
 import {
   Trash2,
@@ -21,9 +25,14 @@ import {
   Sparkles,
   Pencil,
   Loader2,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Search,
+  X,
 } from 'lucide-react';
 import { FmedaNode, FmedaNodeType } from '../types/fmeda';
-import { useFmedaStore } from '../store/fmedaStore';
+import { selectSelectedPath, selectVisibleNodes, useFmedaStore } from '../store/fmedaStore';
 import { useAIStore } from '../store/aiStore';
 import {
   generateFunctionsForComponent,
@@ -41,57 +50,60 @@ import { formatAIError } from '../lib/errorUtils';
 import { generateId } from '../utils/id';
 import { cn } from '../lib/utils';
 import { AILoadingIndicator } from './ui/AILoadingIndicator';
+import { useDevRenderProfile } from '../hooks/useDevRenderProfile';
+import { useVirtualWindow } from '../hooks/useVirtualWindow';
 
 
-const columnHelper = createColumnHelper<FmedaNode & { isPlaceholder?: boolean }>();
+type TableRowData = FmedaNode & { isPlaceholder?: boolean };
+
+const columnHelper = createColumnHelper<TableRowData>();
 
 // FIX #6 & #3: Node type icon for table rows + breadcrumb
-const NODE_TYPE_CONFIG: Record<FmedaNodeType, { icon: React.ReactNode; rowClass: string; label: string; accentClass: string }> = {
+const NODE_TYPE_CONFIG: Record<
+  FmedaNodeType,
+  { icon: React.ReactNode; rowClass: string; stickyCellClass: string; label: string; accentClass: string }
+> = {
   System: {
     icon: <Layers className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />,
     rowClass: 'bg-blue-50/80 text-blue-900 border-b border-blue-100 font-semibold',
+    stickyCellClass: 'bg-blue-50 text-blue-900',
     accentClass: 'bg-blue-600',
     label: 'System',
   },
   Subsystem: {
     icon: <Box className="w-3.5 h-3.5 text-indigo-600 flex-shrink-0" />,
     rowClass: 'bg-indigo-50/60 text-indigo-900 border-b border-indigo-100 font-medium',
+    stickyCellClass: 'bg-indigo-50 text-indigo-900',
     accentClass: 'bg-indigo-500',
     label: 'Subsystem',
   },
   Component: {
     icon: <Cpu className="w-3.5 h-3.5 text-purple-600 flex-shrink-0" />,
     rowClass: 'bg-purple-50/40 text-purple-900 border-b border-purple-100 font-medium',
+    stickyCellClass: 'bg-purple-50 text-purple-900',
     accentClass: 'bg-purple-400',
     label: 'Component',
   },
   Function: {
     icon: <Activity className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />,
     rowClass: 'bg-emerald-50/30 text-emerald-900 border-b border-emerald-100',
+    stickyCellClass: 'bg-emerald-50 text-emerald-900',
     accentClass: 'bg-emerald-400',
     label: 'Function',
   },
   FailureMode: {
     icon: <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />,
     rowClass: 'bg-white text-gray-700 border-b border-gray-100',
+    stickyCellClass: 'bg-white text-gray-700',
     accentClass: 'bg-gray-200',
     label: 'Failure Mode',
   },
 };
 
 // FIX #3: Breadcrumb component
-const HierarchyBreadcrumb: React.FC<{ selectedId: string | null }> = ({ selectedId }) => {
-  const { nodes, setSelectedId } = useFmedaStore();
-
-  if (!selectedId) return null;
-
-  // Build ancestor chain from root to selected
-  const ancestors: FmedaNode[] = [];
-  let current: FmedaNode | null = nodes[selectedId] ?? null;
-  while (current) {
-    ancestors.unshift(current);
-    current = current.parentId ? (nodes[current.parentId] ?? null) : null;
-  }
+const HierarchyBreadcrumb: React.FC = () => {
+  const ancestors = useFmedaStore(selectSelectedPath);
+  const setSelectedId = useFmedaStore((state) => state.setSelectedId);
 
   if (ancestors.length === 0) return null;
 
@@ -141,21 +153,64 @@ const getNextNodeType = (currentType: FmedaNodeType): FmedaNodeType | null => {
   }
 };
 
-export const FmedaTable: React.FC = () => {
-  const {
-    nodes,
-    selectedId,
-    updateNode,
-    deleteNode,
-    addNode,
-    setSelectedId,
-    projectContext
-  } = useFmedaStore();
+const TABLE_ROW_ESTIMATE = 56;
+const PINNED_HIERARCHY_COLUMN_ID = 'name';
+const TABLE_MIN_WIDTH_CLASS = 'min-w-[88rem]';
+const PINNED_COLUMN_SHADOW_CLASS = 'shadow-[6px_0_12px_-10px_rgba(15,23,42,0.28)]';
 
-  const { config: aiConfig } = useAIStore();
+const getNodeSearchText = (node: TableRowData): string => {
+  const diagnosticCoverage =
+    node.type === 'FailureMode'
+      ? (node.diagnosticCoverage ?? 0) * 100
+      : (node.avgDc ?? 0) * 100;
+  const fitRate = node.type === 'FailureMode' ? node.fitRate ?? 0 : node.totalFit ?? 0;
+
+  return [
+    node.name,
+    node.type,
+    node.classification,
+    node.localEffect,
+    node.safetyMechanism,
+    diagnosticCoverage.toFixed(1),
+    fitRate.toFixed(2),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+};
+
+const globalTableFilter: FilterFn<TableRowData> = (row, _columnId, filterValue) => {
+  const query = String(filterValue ?? '').trim().toLowerCase();
+
+  if (!query) {
+    return true;
+  }
+
+  if (row.original.isPlaceholder) {
+    return false;
+  }
+
+  return getNodeSearchText(row.original).includes(query);
+};
+
+export const FmedaTable: React.FC = () => {
+  const nodes = useFmedaStore(selectVisibleNodes);
+  const selectedId = useFmedaStore((state) => state.selectedId);
+  const updateNode = useFmedaStore((state) => state.updateNode);
+  const deleteNode = useFmedaStore((state) => state.deleteNode);
+  const addNode = useFmedaStore((state) => state.addNode);
+  const setSelectedId = useFmedaStore((state) => state.setSelectedId);
+  const projectContext = useFmedaStore((state) => state.projectContext);
+
+  const aiConfig = useAIStore((state) => state.config);
 
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [loadingNodeId, setLoadingNodeId] = useState<string | null>(null);
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [globalFilter, setGlobalFilter] = useState('');
+  const selectedNode = selectedId ? nodes[selectedId] ?? null : null;
+  const hasActiveFilter = globalFilter.trim().length > 0;
+  const hasActiveTableTransforms = hasActiveFilter || sorting.length > 0;
 
   const tableData = useMemo(() => {
     if (!selectedId) {
@@ -167,7 +222,7 @@ export const FmedaTable: React.FC = () => {
 
     const children = selectedNode.childIds.map(id => nodes[id]).filter(Boolean) as (FmedaNode & { isPlaceholder?: boolean })[];
     const nextType = getNextNodeType(selectedNode.type);
-    if (nextType) {
+    if (nextType && !hasActiveTableTransforms) {
       children.push({
         id: `placeholder-${selectedNode.id}`,
         name: `Add ${nextType}...`,
@@ -178,13 +233,18 @@ export const FmedaTable: React.FC = () => {
       } as FmedaNode & { isPlaceholder?: boolean });
     }
     return children;
-  }, [nodes, selectedId]);
+  }, [hasActiveTableTransforms, nodes, selectedId]);
 
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<ExpandedState>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const selectableRowIdsRef = useRef<string[]>([]);
+  const lastSelectedRowIdRef = useRef<string | null>(null);
+  const pendingCheckboxRangeRef = useRef(false);
+  const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
 
-  const handleDelete = async (row: Row<FmedaNode>) => {
+  const handleDelete = useCallback(async (row: Row<FmedaNode>) => {
     const original = row.original;
     const isConfirmed = await confirm({
       title: `Delete ${original.type}?`,
@@ -197,9 +257,9 @@ export const FmedaTable: React.FC = () => {
     if (isConfirmed) {
       deleteNode(original.id);
     }
-  };
+  }, [confirm, deleteNode]);
 
-  const handleAddChild = (parent: FmedaNode) => {
+  const handleAddChild = useCallback((parent: FmedaNode) => {
     const nextType = getNextNodeType(parent.type);
 
     if (nextType) {
@@ -223,14 +283,30 @@ export const FmedaTable: React.FC = () => {
         return { ...prev, [parent.id]: true };
       });
     }
-  };
+  }, [addNode]);
 
-  const getAiContext = (row: Row<FmedaNode & { isPlaceholder?: boolean }>) => {
+  const handleAddForCurrentContext = useCallback(() => {
+    if (!selectedNode) {
+      addNode({
+        id: generateId(),
+        name: 'New System',
+        type: 'System',
+        parentId: null,
+        childIds: [],
+      });
+      return;
+    }
+
+    handleAddChild(selectedNode);
+  }, [handleAddChild, addNode, selectedNode]);
+
+  const getAiContext = useCallback((row: Row<FmedaNode & { isPlaceholder?: boolean }>) => {
+    const allNodes = useFmedaStore.getState().nodes;
     let systemName = '';
     let subsystemName = '';
     let componentName = '';
     let functionName = '';
-    let failureMode: Partial<FmedaNode> = row.original;
+    const failureMode: Partial<FmedaNode> = row.original;
 
     let current: FmedaNode | null = row.original;
     while (current) {
@@ -238,17 +314,17 @@ export const FmedaTable: React.FC = () => {
       if (current.type === 'Subsystem') subsystemName = current.name;
       if (current.type === 'Component') componentName = current.name;
       if (current.type === 'Function') functionName = current.name;
-      current = current.parentId ? nodes[current.parentId] : null;
+      current = current.parentId ? (allNodes[current.parentId] ?? null) : null;
     }
 
     return { systemName, subsystemName, componentName, functionName, failureMode };
-  };
+  }, []);
 
-  const handleCellSave = (row: Row<FmedaNode & { isPlaceholder?: boolean }>, field: string, value: any) => {
+  const handleCellSave = useCallback((row: Row<FmedaNode & { isPlaceholder?: boolean }>, field: string, value: string | number) => {
     updateNode(row.original.id, { [field]: value });
-  };
+  }, [updateNode]);
 
-  const handleRowAiEdit = async (row: Row<FmedaNode>) => {
+  const handleRowAiEdit = useCallback(async (row: Row<FmedaNode>) => {
     if (!aiConfig.apiKey) {
       await confirm({
         title: 'API Key Missing',
@@ -289,7 +365,7 @@ export const FmedaTable: React.FC = () => {
     setLoadingNodeId(node.id);
 
     try {
-      const { systemName, subsystemName, componentName, functionName } = getAiContext(row as any);
+      const { systemName, subsystemName, componentName, functionName } = getAiContext(row as Row<FmedaNode & { isPlaceholder?: boolean }>);
 
       const refined = await refineFailureMode(
         aiConfig,
@@ -327,10 +403,9 @@ export const FmedaTable: React.FC = () => {
       setIsAiLoading(false);
       setLoadingNodeId(null);
     }
-  };
+  }, [aiConfig, projectContext, confirm, getAiContext, updateNode]);
 
   const handleBulkGenerate = async () => {
-    if (!selectedId) return;
     if (!aiConfig.apiKey) {
       await confirm({
         title: 'API Key Missing',
@@ -350,7 +425,9 @@ export const FmedaTable: React.FC = () => {
       return;
     }
 
-    const nextType = selectedId ? getNextNodeType(nodes[selectedId].type) : 'System';
+    const allNodes = useFmedaStore.getState().nodes;
+    const selectedNodeFromStore = selectedId ? allNodes[selectedId] ?? null : null;
+    const nextType = selectedNodeFromStore ? getNextNodeType(selectedNodeFromStore.type) : 'System';
     if (!nextType) return;
 
     setIsAiLoading(true);
@@ -362,19 +439,19 @@ export const FmedaTable: React.FC = () => {
       let componentName = '';
       let functionName = '';
 
-      if (selectedId) {
-        let current: FmedaNode | null = nodes[selectedId];
+      if (selectedNodeFromStore) {
+        let current: FmedaNode | null = selectedNodeFromStore;
         while (current) {
           if (current.type === 'System') systemName = current.name;
           if (current.type === 'Subsystem') subsystemName = current.name;
           if (current.type === 'Component') componentName = current.name;
           if (current.type === 'Function') functionName = current.name;
-          current = current.parentId ? nodes[current.parentId] : null;
+          current = current.parentId ? (allNodes[current.parentId] ?? null) : null;
         }
       }
 
       if (nextType === 'System') {
-        const existingNames = Object.values(nodes).filter(n => !n.parentId).map(n => n.name);
+        const existingNames = Object.values(allNodes).filter((node) => !node.parentId).map((node) => node.name);
         const systems = await generateSystems(aiConfig, projectContext, existingNames);
         systems.forEach(s => {
           addNode({
@@ -386,7 +463,8 @@ export const FmedaTable: React.FC = () => {
           });
         });
       } else if (nextType === 'Subsystem') {
-        const parentNode = nodes[selectedId!];
+        if (!selectedNodeFromStore) return;
+        const parentNode = selectedNodeFromStore;
         const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const subsystems = await generateSubsystemsForSystem(
           aiConfig,
@@ -405,7 +483,8 @@ export const FmedaTable: React.FC = () => {
           });
         });
       } else if (nextType === 'Component') {
-        const parentNode = nodes[selectedId!];
+        if (!selectedNodeFromStore) return;
+        const parentNode = selectedNodeFromStore;
         const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const components = await generateComponentsForSubsystem(
           aiConfig,
@@ -425,7 +504,8 @@ export const FmedaTable: React.FC = () => {
           });
         });
       } else if (nextType === 'Function') {
-        const parentNode = nodes[selectedId!];
+        if (!selectedNodeFromStore) return;
+        const parentNode = selectedNodeFromStore;
         const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const functions = await generateFunctionsForComponent(
           aiConfig,
@@ -446,7 +526,8 @@ export const FmedaTable: React.FC = () => {
           });
         });
       } else if (nextType === 'FailureMode') {
-        const parentNode = nodes[selectedId!];
+        if (!selectedNodeFromStore) return;
+        const parentNode = selectedNodeFromStore;
         const existingNames = parentNode.childIds.map(id => nodes[id]?.name).filter(Boolean);
         const failureModes = await generateFailureModesForFunction(
           aiConfig,
@@ -495,14 +576,104 @@ export const FmedaTable: React.FC = () => {
     }
   };
 
+  const getRangeSelection = useCallback((anchorId: string, targetId: string) => {
+    const selectableRowIds = selectableRowIdsRef.current;
+    const startIndex = selectableRowIds.indexOf(anchorId);
+    const endIndex = selectableRowIds.indexOf(targetId);
+
+    if (startIndex === -1 || endIndex === -1) {
+      return [targetId];
+    }
+
+    const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+    return selectableRowIds.slice(from, to + 1);
+  }, []);
+
+  const clearRowSelection = useCallback(() => {
+    setSelectedRowIds([]);
+    lastSelectedRowIdRef.current = null;
+  }, []);
+
+  const selectAllVisibleRows = useCallback(() => {
+    const selectableRowIds = selectableRowIdsRef.current;
+    setSelectedRowIds(selectableRowIds);
+    lastSelectedRowIdRef.current = selectableRowIds[selectableRowIds.length - 1] ?? null;
+  }, []);
+
+  const toggleRowSelection = useCallback(
+    (
+      rowId: string,
+      options: {
+        mode: 'replace' | 'toggle' | 'range';
+        shouldSelect?: boolean;
+      }
+    ) => {
+      setSelectedRowIds((current) => {
+        const isCurrentlySelected = current.includes(rowId);
+        const shouldSelect = options.shouldSelect ?? !isCurrentlySelected;
+
+        if (options.mode === 'replace') {
+          return shouldSelect ? [rowId] : [];
+        }
+
+        if (options.mode === 'range' && lastSelectedRowIdRef.current) {
+          const rangeIds = getRangeSelection(lastSelectedRowIdRef.current, rowId);
+          const nextSelection = new Set(current);
+
+          rangeIds.forEach((id) => {
+            if (shouldSelect) {
+              nextSelection.add(id);
+            } else {
+              nextSelection.delete(id);
+            }
+          });
+
+          return Array.from(nextSelection);
+        }
+
+        const nextSelection = new Set(current);
+        if (shouldSelect) {
+          nextSelection.add(rowId);
+        } else {
+          nextSelection.delete(rowId);
+        }
+        return Array.from(nextSelection);
+      });
+
+      lastSelectedRowIdRef.current = rowId;
+    },
+    [getRangeSelection]
+  );
+
   const columns = useMemo(
     () => [
       columnHelper.accessor('name', {
         id: 'name',
-        header: 'Hierarchy / Name',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by hierarchy name"
+            >
+              <span>Hierarchy / Name</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
         cell: ({ row, getValue }) => {
           const isFailureMode = row.original.type === 'FailureMode';
           const isRenaming = renamingId === row.original.id;
+          const isSelected = selectedRowIdSet.has(row.original.id);
           const fontClass =
             row.original.type === 'System' ? 'font-bold' :
             row.original.type === 'Subsystem' ? 'font-semibold' :
@@ -514,6 +685,24 @@ export const FmedaTable: React.FC = () => {
               className="flex items-center gap-2"
               style={{ paddingLeft: `${row.depth * 1.25}rem` }}
             >
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onMouseDown={(event) => {
+                  pendingCheckboxRangeRef.current = event.shiftKey;
+                }}
+                onChange={(event) => {
+                  const mode = pendingCheckboxRangeRef.current && lastSelectedRowIdRef.current ? 'range' : 'toggle';
+                  pendingCheckboxRangeRef.current = false;
+                  toggleRowSelection(row.original.id, {
+                    mode,
+                    shouldSelect: event.target.checked,
+                  });
+                }}
+                onClickCapture={(event) => event.stopPropagation()}
+                aria-label={`Select row ${row.original.name}`}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
               {row.getCanExpand() ? (
                 <button
                   onClick={(e) => {
@@ -551,12 +740,12 @@ export const FmedaTable: React.FC = () => {
                   />
                 ) : (
                   // Nav mode: blue link navigates, pencil appears on hover
-                  <div className="flex items-center gap-1.5 min-w-0">
+                  <div className="flex items-start gap-1.5 min-w-0">
                     <button
                       type="button"
                       onClick={() => setSelectedId(row.original.id)}
                       className={cn(
-                        "text-left truncate transition-colors hover:text-blue-700 hover:underline underline-offset-2 text-blue-600",
+                        "w-full whitespace-normal break-words text-left leading-snug transition-colors hover:text-blue-700 hover:underline underline-offset-2 text-blue-600",
                         fontClass
                       )}
                       title={`Open ${row.original.type}: ${getValue()}`}
@@ -583,7 +772,27 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => row.localEffect || '', {
         id: 'localEffect',
-        header: 'Local Effect',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by local effect"
+            >
+              <span>Local Effect</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
         cell: ({ row, getValue }) => {
           if (row.original.type !== 'FailureMode') return null;
           return (
@@ -600,7 +809,27 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => row.safetyMechanism || '', {
         id: 'safetyMechanism',
-        header: 'Safety Mechanism',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by safety mechanism"
+            >
+              <span>Safety Mechanism</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
         cell: ({ row, getValue }) => {
           if (row.original.type !== 'FailureMode') return null;
           return (
@@ -615,9 +844,31 @@ export const FmedaTable: React.FC = () => {
           );
         },
       }),
-      columnHelper.accessor((row) => row.diagnosticCoverage || 0, {
+      columnHelper.accessor(
+        (row) => (row.type === 'FailureMode' ? row.diagnosticCoverage ?? 0 : row.avgDc ?? 0),
+        {
         id: 'diagnosticCoverage',
-        header: 'DC (%)',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by diagnostic coverage"
+            >
+              <span>DC (%)</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
         cell: ({ row, getValue }) => {
           const value = row.original.type !== 'FailureMode' ? row.original.avgDc || 0 : getValue();
           const numValue = typeof value === 'number' ? value : 0;
@@ -654,9 +905,29 @@ export const FmedaTable: React.FC = () => {
           );
         },
       }),
-      columnHelper.accessor((row) => row.fitRate || 0, {
+      columnHelper.accessor((row) => (row.type === 'FailureMode' ? row.fitRate ?? 0 : row.totalFit ?? 0), {
         id: 'fitRate',
-        header: 'FIT Rate',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by FIT rate"
+            >
+              <span>FIT Rate</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
         cell: ({ row, getValue }) => {
           const value = row.original.type !== 'FailureMode' ? row.original.totalFit || 0 : getValue();
           const numValue = typeof value === 'number' ? value : 0;
@@ -688,11 +959,21 @@ export const FmedaTable: React.FC = () => {
       columnHelper.display({
         id: 'actions',
         header: '',
+        enableSorting: false,
         cell: (info) => (
           <div className="flex items-center gap-1 justify-end">
+            {getNextNodeType(info.row.original.type) && (
+              <button
+                onClick={() => handleAddChild(info.row.original)}
+                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                title={`Add ${getNextNodeType(info.row.original.type)}`}
+              >
+                <Plus size={15} />
+              </button>
+            )}
             {info.row.original.type === 'FailureMode' && (
               <button
-                onClick={() => handleRowAiEdit(info.row as any)}
+                onClick={() => handleRowAiEdit(info.row as Row<FmedaNode>)}
                 disabled={isAiLoading}
                 className={cn(
                   "p-1.5 rounded-md transition-colors",
@@ -708,7 +989,7 @@ export const FmedaTable: React.FC = () => {
               </button>
             )}
             <button
-              onClick={() => handleDelete(info.row as any)}
+              onClick={() => handleDelete(info.row as Row<FmedaNode>)}
               className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"
               title="Delete"
             >
@@ -718,20 +999,38 @@ export const FmedaTable: React.FC = () => {
         ),
       }),
     ],
-    [deleteNode, addNode, updateNode, nodes, confirm, setSelectedId, renamingId, setRenamingId, isAiLoading, loadingNodeId]
+    [
+      getAiContext,
+      handleAddChild,
+      handleCellSave,
+      handleDelete,
+      handleRowAiEdit,
+      isAiLoading,
+      loadingNodeId,
+      renamingId,
+      selectedRowIdSet,
+      setRenamingId,
+      setSelectedId,
+      toggleRowSelection,
+    ]
   );
 
   const table = useReactTable({
     data: tableData,
     columns,
     state: {
-      expanded,
+      expanded: hasActiveFilter ? true : expanded,
+      globalFilter,
+      sorting,
     },
     onExpandedChange: setExpanded,
+    onGlobalFilterChange: setGlobalFilter,
+    onSortingChange: setSorting,
+    globalFilterFn: globalTableFilter,
     getSubRows: (row) => {
       const children = row.childIds.map(id => nodes[id]).filter(Boolean) as (FmedaNode & { isPlaceholder?: boolean })[];
       const nextType = getNextNodeType(row.type);
-      if (nextType) {
+      if (nextType && !hasActiveTableTransforms) {
         children.push({
           id: `placeholder-${row.id}`,
           name: `Add ${nextType}...`,
@@ -744,7 +1043,64 @@ export const FmedaTable: React.FC = () => {
       return children;
     },
     getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    filterFromLeafRows: true,
+    maxLeafRowFilterDepth: 8,
+  });
+
+  const allRows = table.getRowModel().rows;
+  const selectableRowIds = useMemo(
+    () => allRows.filter((row) => !row.original.id.startsWith('placeholder-')).map((row) => row.original.id),
+    [allRows]
+  );
+  const selectedRows = useMemo(
+    () => allRows.filter((row) => selectedRowIdSet.has(row.original.id)),
+    [allRows, selectedRowIdSet]
+  );
+  const selectedFailureModeCount = useMemo(
+    () => selectedRows.filter((row) => row.original.type === 'FailureMode').length,
+    [selectedRows]
+  );
+  const allVisibleRowsSelected =
+    selectableRowIds.length > 0 && selectedRowIds.length === selectableRowIds.length;
+  const visibleColumnCount = table.getVisibleLeafColumns().length;
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const { totalSize, virtualItems, registerItem: registerRow, scrollToIndex } = useVirtualWindow({
+    count: allRows.length,
+    estimateSize: TABLE_ROW_ESTIMATE,
+    overscan: 8,
+    scrollRef: scrollContainerRef,
+    enabled: allRows.length > 20,
+  });
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom =
+    virtualItems.length > 0
+      ? Math.max(0, totalSize - virtualItems[virtualItems.length - 1].end)
+      : 0;
+  const isVirtualized = allRows.length > 20;
+  selectableRowIdsRef.current = selectableRowIds;
+
+  useEffect(() => {
+    const visibleRowIdSet = new Set(selectableRowIds);
+
+    setSelectedRowIds((current) => {
+      const next = current.filter((id) => visibleRowIdSet.has(id));
+      return next.length === current.length ? current : next;
+    });
+
+    if (lastSelectedRowIdRef.current && !visibleRowIdSet.has(lastSelectedRowIdRef.current)) {
+      lastSelectedRowIdRef.current = null;
+    }
+  }, [selectableRowIds]);
+
+  useDevRenderProfile('FmedaTable', {
+    selectedId: selectedId ?? 'all',
+    totalRows: allRows.length,
+    renderedRows: virtualItems.length,
+    isVirtualized,
+    selectedRows: selectedRowIds.length,
   });
 
   const handleTableKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -762,8 +1118,8 @@ export const FmedaTable: React.FC = () => {
     let nextRow = rowIndex;
     let nextCol = colIndex;
 
-    const totalRows = table.getRowModel().rows.length;
-    const totalCols = 6;
+    const totalRows = allRows.length;
+    const totalCols = table.getVisibleLeafColumns().length;
 
     switch (e.key) {
       case 'ArrowUp': nextRow--; break;
@@ -773,30 +1129,46 @@ export const FmedaTable: React.FC = () => {
     }
 
     if (nextRow >= 0 && nextRow < totalRows && nextCol >= 0 && nextCol < totalCols) {
-      const nextCell = document.querySelector(
-        `td[data-row-index="${nextRow}"][data-col-index="${nextCol}"]`
-      );
+      const focusSelector = `td[data-row-index="${nextRow}"][data-col-index="${nextCol}"]`;
+      const container = scrollContainerRef.current;
+      const focusVisibleCell = () => {
+        const nextCell = container?.querySelector(focusSelector);
+        if (!nextCell) return false;
 
-      if (nextCell) {
-        const focusable = nextCell.querySelector('button, input, select, textarea') as HTMLElement;
-        if (focusable) {
-          focusable.focus();
-          e.preventDefault();
-        }
+        const focusable = nextCell.querySelector('button, input, select, textarea') as HTMLElement | null;
+        if (!focusable) return false;
+
+        focusable.focus();
+        return true;
+      };
+
+      if (!focusVisibleCell()) {
+        scrollToIndex(nextRow);
+        requestAnimationFrame(() => {
+          focusVisibleCell();
+        });
       }
+
+      e.preventDefault();
     }
-  }, [table]);
+  }, [allRows.length, scrollToIndex, table]);
 
   // FIX #14: Context-aware empty state message
   const getEmptyStateMessage = () => {
+    if (hasActiveFilter) {
+      return {
+        title: 'No matching rows',
+        sub: 'Try a different search term or clear the current filter.',
+      };
+    }
+
     if (!selectedId) return { title: 'No FMEDA data yet', sub: 'Please go back to the Dashboard to create or import a project.' };
-    const sel = nodes[selectedId];
-    if (!sel) return { title: 'Nothing here', sub: 'No children found.' };
-    const nextType = getNextNodeType(sel.type);
-    if (!nextType) return { title: 'No children', sub: `${sel.type} nodes are leaf items.` };
+    if (!selectedNode) return { title: 'Nothing here', sub: 'No children found.' };
+    const nextType = getNextNodeType(selectedNode.type);
+    if (!nextType) return { title: 'No children', sub: `${selectedNode.type} nodes are leaf items.` };
     return {
       title: `No ${nextType}s yet`,
-      sub: `Add a ${nextType} to "${sel.name}" using the + button in the actions column above, or select a different item.`,
+      sub: `Add a ${nextType} to "${selectedNode.name}" using the + button in the actions column above, or select a different item.`,
     };
   };
 
@@ -807,8 +1179,19 @@ export const FmedaTable: React.FC = () => {
   const componentCount = allNodes.filter(n => n.type === 'Component').length;
   const functionCount = allNodes.filter(n => n.type === 'Function').length;
   const failureModeCount = allNodes.filter(n => n.type === 'FailureMode').length;
-
-  const selectedNode = selectedId ? nodes[selectedId] : null;
+  const nextSelectedType = selectedNode ? getNextNodeType(selectedNode.type) : null;
+  const bulkGenerateLabel = selectedId && nextSelectedType ? `${nextSelectedType}s` : 'Systems';
+  const manualAddLabel = selectedId && nextSelectedType ? nextSelectedType : 'System';
+  const activeSort = sorting[0];
+  const sortColumnLabel = activeSort
+    ? ({
+        name: 'name',
+        localEffect: 'local effect',
+        safetyMechanism: 'safety mechanism',
+        diagnosticCoverage: 'diagnostic coverage',
+        fitRate: 'FIT rate',
+      }[activeSort.id] ?? activeSort.id)
+    : null;
 
   const getSubFailureModes = (node: FmedaNode): FmedaNode[] => {
     if (node.type === 'FailureMode') return [node];
@@ -890,21 +1273,21 @@ export const FmedaTable: React.FC = () => {
         {/* Top Row: Breadcrumb */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex-1 min-w-0">
-            <HierarchyBreadcrumb selectedId={selectedId} />
+            <HierarchyBreadcrumb />
           </div>
         </div>
 
         {/* Bottom Row: Title + Subtitle and Actions */}
         <div className="flex flex-wrap items-end justify-between gap-4 w-full">
           {/* Icon & Title */}
-          <div className="flex items-center gap-3 min-w-0 flex-1">
+          <div className="flex items-start gap-3 min-w-0 flex-1">
             {selectedNode && (
               <span className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-100 shadow-sm shrink-0 [&>svg]:w-5 [&>svg]:h-5">
                 {NODE_TYPE_CONFIG[selectedNode.type]?.icon}
               </span>
             )}
             <div className="min-w-0">
-              <h2 className="text-2xl font-bold text-gray-900 leading-tight tracking-tight truncate">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 leading-tight tracking-tight whitespace-normal break-words">
                 {pageTitle}
               </h2>
               {renderSubtitle()}
@@ -942,28 +1325,43 @@ export const FmedaTable: React.FC = () => {
               </div>
             )}
 
-            {(!selectedId || (nodes[selectedId] && getNextNodeType(nodes[selectedId].type))) && (
-              <button
-                onClick={handleBulkGenerate}
-                disabled={isAiLoading}
-                className={cn(
-                  "flex items-center gap-1.5 px-3.5 py-2 text-white rounded-lg shadow-sm transition-all text-sm font-semibold focus:outline-none focus:ring-2",
-                  isAiLoading
-                    ? "bg-purple-400 cursor-not-allowed"
-                    : "bg-purple-600 hover:bg-purple-700 active:bg-purple-800 focus:ring-purple-500/20"
-                )}
-              >
-                {isAiLoading && !loadingNodeId ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <Sparkles size={16} />
-                )}
-                <span>
-                  {isAiLoading && !loadingNodeId
-                    ? `Generating ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}...`
-                    : `Generate ${selectedId ? getNextNodeType(nodes[selectedId].type) + 's' : 'Systems'}`}
-                </span>
-              </button>
+            {(!selectedId || nextSelectedType) && (
+              <>
+                <button
+                  onClick={handleAddForCurrentContext}
+                  disabled={isAiLoading}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3.5 py-2 rounded-lg shadow-sm transition-all text-sm font-semibold focus:outline-none focus:ring-2",
+                    isAiLoading
+                      ? "bg-blue-100 text-blue-300 cursor-not-allowed"
+                      : "bg-blue-600 text-white hover:bg-blue-700 active:bg-blue-800 focus:ring-blue-500/20"
+                  )}
+                >
+                  <Plus size={16} />
+                  <span>Add {manualAddLabel}</span>
+                </button>
+                <button
+                  onClick={handleBulkGenerate}
+                  disabled={isAiLoading}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3.5 py-2 text-white rounded-lg shadow-sm transition-all text-sm font-semibold focus:outline-none focus:ring-2",
+                    isAiLoading
+                      ? "bg-purple-400 cursor-not-allowed"
+                      : "bg-purple-600 hover:bg-purple-700 active:bg-purple-800 focus:ring-purple-500/20"
+                  )}
+                >
+                  {isAiLoading && !loadingNodeId ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Sparkles size={16} />
+                  )}
+                  <span>
+                    {isAiLoading && !loadingNodeId
+                      ? `Generating ${bulkGenerateLabel}...`
+                      : `Generate ${bulkGenerateLabel}`}
+                  </span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -975,7 +1373,7 @@ export const FmedaTable: React.FC = () => {
           <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
              <div className="font-semibold text-gray-800 text-sm uppercase tracking-wider">Failure Mode Details</div>
              <button
-                onClick={() => handleRowAiEdit({ original: selectedNode } as any)}
+                onClick={() => handleRowAiEdit({ original: selectedNode } as Row<FmedaNode>)}
                 disabled={isAiLoading}
                 className={cn(
                   "px-3 py-1.5 rounded-md text-sm font-semibold transition-all flex items-center gap-1.5 shadow-sm",
@@ -1011,7 +1409,7 @@ export const FmedaTable: React.FC = () => {
                   <EditableAICell
                     initialValue={selectedNode.localEffect || ''}
                     onSave={(val) => updateNode(selectedNode.id, { localEffect: val })}
-                    aiContext={getAiContext({ original: selectedNode } as any)}
+                    aiContext={getAiContext({ original: selectedNode } as Row<FmedaNode & { isPlaceholder?: boolean }>)}
                     field="localEffect"
                     multiline
                   />
@@ -1023,7 +1421,7 @@ export const FmedaTable: React.FC = () => {
                   <EditableAICell
                     initialValue={selectedNode.safetyMechanism || ''}
                     onSave={(val) => updateNode(selectedNode.id, { safetyMechanism: val })}
-                    aiContext={getAiContext({ original: selectedNode } as any)}
+                    aiContext={getAiContext({ original: selectedNode } as Row<FmedaNode & { isPlaceholder?: boolean }>)}
                     field="safetyMechanism"
                     multiline
                   />
@@ -1102,9 +1500,87 @@ export const FmedaTable: React.FC = () => {
           </div>
         </div>
       ) : (
-        <div className="overflow-x-auto border border-gray-200 rounded-lg shadow-sm">
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+            <div className="relative flex-1 min-w-[16rem] max-w-xl">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={globalFilter}
+                onChange={(event) => setGlobalFilter(event.target.value)}
+                placeholder={selectedNode ? `Search within ${selectedNode.name}` : 'Search names, effects, mechanisms, FIT, or classification'}
+                className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-9 text-sm text-gray-700 shadow-sm transition-colors placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+              {globalFilter && (
+                <button
+                  type="button"
+                  onClick={() => setGlobalFilter('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                  title="Clear search"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+              <span className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-600">
+                {allRows.length} visible row{allRows.length === 1 ? '' : 's'}
+              </span>
+              {selectedRowIds.length > 0 && (
+                <span className="rounded-full bg-blue-50 px-2.5 py-1 font-medium text-blue-700">
+                  {selectedRowIds.length} selected
+                </span>
+              )}
+              {selectedFailureModeCount > 0 && (
+                <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-medium text-emerald-700">
+                  {selectedFailureModeCount} failure mode{selectedFailureModeCount === 1 ? '' : 's'} selected
+                </span>
+              )}
+              {hasActiveFilter && (
+                <span className="rounded-full bg-blue-50 px-2.5 py-1 font-medium text-blue-700">
+                  Filtered from current hierarchy scope
+                </span>
+              )}
+              {sortColumnLabel && (
+                <button
+                  type="button"
+                  onClick={() => setSorting([])}
+                  className="rounded-full bg-amber-50 px-2.5 py-1 font-medium text-amber-700 transition-colors hover:bg-amber-100"
+                  title="Clear active sorting"
+                >
+                  Sorted by {sortColumnLabel} ({activeSort?.desc ? 'desc' : 'asc'})
+                </button>
+              )}
+              {allRows.length > 0 && !allVisibleRowsSelected && (
+                <button
+                  type="button"
+                  onClick={selectAllVisibleRows}
+                  className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                >
+                  Select all visible
+                </button>
+              )}
+              {selectedRowIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={clearRowSelection}
+                  className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                >
+                  Clear selection
+                </button>
+              )}
+              <span className="text-gray-400">
+                Use row checkboxes to build a selection in the current view
+              </span>
+            </div>
+          </div>
+
+          <div
+            ref={scrollContainerRef}
+            className="overflow-auto border border-gray-200 rounded-lg shadow-sm h-[clamp(24rem,calc(100vh-15rem),48rem)]"
+          >
           {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
-          <table className="min-w-full divide-y divide-gray-200">
+          <table className={cn("w-full table-fixed divide-y divide-gray-200", TABLE_MIN_WIDTH_CLASS)}>
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
@@ -1112,11 +1588,14 @@ export const FmedaTable: React.FC = () => {
                     <th
                       key={header.id}
                       className={cn(
-                        "px-2 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider",
-                        i === 0 ? "w-[25%]" : "",
-                        i === 1 || i === 2 ? "w-[22%]" : "",
-                        i === 3 || i === 4 ? "w-[10%]" : "",
-                        i === 5 ? "w-[11%]" : "",
+                        "border-r border-gray-200 px-2 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 last:border-r-0",
+                        i === 0 ? "w-[24rem] min-w-[24rem]" : "",
+                        i === 1 || i === 2 ? "w-[20rem] min-w-[20rem]" : "",
+                        i === 3 || i === 4 ? "w-[8.5rem] min-w-[8.5rem]" : "",
+                        i === 5 ? "w-[7rem] min-w-[7rem]" : "",
+                        header.column.id === PINNED_HIERARCHY_COLUMN_ID
+                          ? cn("sticky left-0 z-30 border-r border-gray-200 bg-gray-50", PINNED_COLUMN_SHADOW_CLASS)
+                          : "",
                       )}
                     >
                       {header.isPlaceholder
@@ -1128,8 +1607,16 @@ export const FmedaTable: React.FC = () => {
               ))}
             </thead>
             <tbody className="bg-white divide-y divide-gray-100" onKeyDown={handleTableKeyDown}>
-              {table.getRowModel().rows.length > 0 ? (
-                table.getRowModel().rows.map((row, rowIndex) => {
+              {allRows.length > 0 ? (
+                <>
+                  {paddingTop > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={visibleColumnCount} className="p-0 border-0" style={{ height: paddingTop }} />
+                    </tr>
+                  )}
+                  {virtualItems.map((item) => {
+                  const row = allRows[item.index];
+                  const rowIndex = item.index;
                   const isPlaceholder = row.original.id.startsWith('placeholder-');
 
                   if (isPlaceholder) {
@@ -1138,14 +1625,15 @@ export const FmedaTable: React.FC = () => {
                     return (
                       <tr
                         key={row.id}
+                        ref={(element) => registerRow(rowIndex, element)}
                         className="transition-all border-b border-gray-100 bg-gray-50/20"
                       >
                         <td
-                          colSpan={6}
                           className={cn(
-                            "px-2 py-2 text-sm",
+                            "sticky left-0 z-10 border-r border-gray-200 bg-gray-50 px-2 py-2 text-sm",
                             typeConfig && "border-l-[4px]",
-                            typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-')
+                            typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-'),
+                            PINNED_COLUMN_SHADOW_CLASS,
                           )}
                         >
                           <button
@@ -1160,6 +1648,9 @@ export const FmedaTable: React.FC = () => {
                             <span className="italic">{row.original.name}</span>
                           </button>
                         </td>
+                        {visibleColumnCount > 1 && (
+                          <td colSpan={visibleColumnCount - 1} className="px-0 py-0" />
+                        )}
                       </tr>
                     );
                   }
@@ -1167,19 +1658,34 @@ export const FmedaTable: React.FC = () => {
                   // FIX #6: Color by node type, not by depth
                   const typeConfig = NODE_TYPE_CONFIG[row.original.type];
                   const rowClass = typeConfig.rowClass;
+                  const isSelected = selectedRowIdSet.has(row.original.id);
 
                   return (
                     <tr
                       key={row.id}
-                      className={cn(rowClass, "hover:brightness-[0.97] transition-all")}
+                      ref={(element) => registerRow(rowIndex, element)}
+                      className={cn(
+                        rowClass,
+                        isSelected ? "bg-blue-50/80" : "hover:brightness-[0.97]",
+                        "transition-all"
+                      )}
                     >
                       {row.getVisibleCells().map((cell, colIndex) => (
                         <td
                           key={cell.id}
                           className={cn(
-                            "px-2 py-3 whitespace-normal text-sm relative group/cell",
+                            "relative border-r border-gray-200 px-2 py-3 text-sm whitespace-normal group/cell last:border-r-0",
                             colIndex === 0 && "border-l-[4px]",
-                            colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-')
+                            colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-'),
+                            cell.column.id === PINNED_HIERARCHY_COLUMN_ID
+                              ? cn(
+                                  "sticky left-0 z-10 border-r border-gray-200",
+                                  isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
+                                  PINNED_COLUMN_SHADOW_CLASS,
+                                )
+                              : isSelected
+                                ? "bg-blue-50/70"
+                                : "",
                           )}
                           data-row-index={rowIndex}
                           data-col-index={colIndex}
@@ -1189,11 +1695,17 @@ export const FmedaTable: React.FC = () => {
                       ))}
                     </tr>
                   );
-                })
+                })}
+                  {paddingBottom > 0 && (
+                    <tr aria-hidden="true">
+                      <td colSpan={visibleColumnCount} className="p-0 border-0" style={{ height: paddingBottom }} />
+                    </tr>
+                  )}
+                </>
               ) : (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={visibleColumnCount}
                     className="px-6 py-14 text-center"
                   >
                     <p className="text-gray-500 font-medium text-sm">{emptyState.title}</p>
@@ -1203,6 +1715,7 @@ export const FmedaTable: React.FC = () => {
               )}
             </tbody>
           </table>
+        </div>
         </div>
       )}
     </div>

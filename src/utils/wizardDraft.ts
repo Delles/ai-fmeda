@@ -1,4 +1,10 @@
 import { WizardState, WizardStepNumber } from '../types/ai';
+import {
+  PROJECT_NOTES_DOCUMENT_ID,
+  PROJECT_NOTES_DOCUMENT_NAME,
+  getCombinedDocumentText,
+  normalizeProjectDocuments,
+} from './projectDocuments';
 
 export const WIZARD_STORAGE_KEY = 'fmeda-wizard-progress';
 const WIZARD_STORAGE_VERSION = 1;
@@ -22,7 +28,7 @@ const DEFAULT_DRAFT_STATE: WizardDraftState = {
   safetyStandard: '',
   targetAsil: '',
   safetyGoal: '',
-  documentText: '',
+  documents: [],
   architecture: [],
   currentStep: 1,
 };
@@ -40,14 +46,28 @@ const normalizeState = (value: unknown): WizardDraftState | null => {
     return null;
   }
 
-  const draft = value as Partial<WizardDraftState>;
+  const draft = value as Partial<WizardDraftState> & { documentText?: unknown };
+  const documents = normalizeProjectDocuments(
+    draft.documents ??
+      (typeof draft.documentText === 'string'
+        ? [
+            {
+              id: PROJECT_NOTES_DOCUMENT_ID,
+              name: PROJECT_NOTES_DOCUMENT_NAME,
+              extractedText: draft.documentText,
+              uploadedAt: new Date(0).toISOString(),
+              kind: 'notes' as const,
+            },
+          ]
+        : [])
+  );
 
   return {
     projectName: typeof draft.projectName === 'string' ? draft.projectName : DEFAULT_DRAFT_STATE.projectName,
     safetyStandard: typeof draft.safetyStandard === 'string' ? draft.safetyStandard : DEFAULT_DRAFT_STATE.safetyStandard,
     targetAsil: typeof draft.targetAsil === 'string' ? draft.targetAsil : DEFAULT_DRAFT_STATE.targetAsil,
     safetyGoal: typeof draft.safetyGoal === 'string' ? draft.safetyGoal : DEFAULT_DRAFT_STATE.safetyGoal,
-    documentText: typeof draft.documentText === 'string' ? draft.documentText : DEFAULT_DRAFT_STATE.documentText,
+    documents,
     architecture: Array.isArray(draft.architecture) ? draft.architecture : DEFAULT_DRAFT_STATE.architecture,
     currentStep: normalizeCurrentStep(draft.currentStep),
   };
@@ -62,7 +82,7 @@ const toDraftState = (state: WizardState): WizardDraftState => ({
   safetyStandard: state.safetyStandard,
   targetAsil: state.targetAsil,
   safetyGoal: state.safetyGoal,
-  documentText: state.documentText,
+  documents: state.documents,
   architecture: state.architecture,
   currentStep: state.currentStep,
 });
@@ -72,14 +92,14 @@ export const getWizardDraftSnapshot = (state: WizardState): string => {
 };
 
 export const hasWizardDraftContent = (
-  state: Pick<WizardState, 'projectName' | 'safetyStandard' | 'targetAsil' | 'safetyGoal' | 'documentText' | 'architecture'>
+  state: Pick<WizardState, 'projectName' | 'safetyStandard' | 'targetAsil' | 'safetyGoal' | 'documents' | 'architecture'>
 ): boolean => {
   return Boolean(
     state.projectName.trim() ||
     state.safetyStandard.trim() ||
     state.targetAsil.trim() ||
     state.safetyGoal.trim() ||
-    state.documentText.trim() ||
+    getCombinedDocumentText(state.documents).trim() ||
     state.architecture.length > 0
   );
 };

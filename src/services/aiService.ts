@@ -1,6 +1,8 @@
 import { FmedaFailureMode } from '../types/fmeda';
-import { AISuggestion, AIConfig, FmedaSystemDeep, FmedaComponentDeep, FmedaFunctionDeep, FmedaFailureModeDeep, ProjectContext } from '../types/ai';
+import { AISuggestion, AIConfig, FmedaSystemDeep, FmedaComponentDeep, FmedaFunctionDeep, FmedaFailureModeDeep } from '../types/ai';
+import type { ProjectContext } from '../types/fmeda';
 import { GoogleGenAI } from '@google/genai';
+import { getCombinedDocumentText } from '../utils/projectDocuments';
 
 export interface AISuggestionContext {
   systemName?: string;
@@ -14,11 +16,11 @@ export interface AISuggestionContext {
 
 // ─── JSON Parsing ───────────────────────────────────────────────────────────
 
-function extractJson(text: string): any {
+function extractJson(text: string): unknown {
   const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
   const contentToParse = codeBlockMatch ? codeBlockMatch[1].trim() : text.trim();
 
-  try { return JSON.parse(contentToParse); } catch (e) {}
+  try { return JSON.parse(contentToParse); } catch { /* ignore */ }
 
   const firstBrace = contentToParse.indexOf('{');
   const firstBracket = contentToParse.indexOf('[');
@@ -68,7 +70,7 @@ function extractJson(text: string): any {
   if (endIndex !== -1) {
     try {
       return JSON.parse(contentToParse.substring(startIndex, endIndex + 1));
-    } catch (e) {}
+    } catch { /* ignore */ }
   }
 
   throw new Error('Failed to parse extracted JSON');
@@ -112,11 +114,13 @@ function buildProjectContextBlock(ctx: ProjectContext): string {
   if (ctx.targetAsil) parts.push(`Target ASIL: ${ctx.targetAsil}`);
   if (ctx.safetyGoal) parts.push(`Safety Goal: ${ctx.safetyGoal}`);
 
-  if (ctx.documentText) {
+  const documentText = ctx.documentText || getCombinedDocumentText(ctx.documents ?? []);
+
+  if (documentText) {
     parts.push('');
     parts.push('Technical Documentation:');
     parts.push('"""');
-    parts.push(ctx.documentText.slice(0, 60000));
+    parts.push(documentText.slice(0, 60000));
     parts.push('"""');
   }
 
@@ -160,16 +164,16 @@ export const getAISuggestions = async (
     Example: {"suggestions": [{"suggestion": "Value", "reasoning": "Because..."}]}
   `;
 
-  const result = await callAIGeneric<{ suggestions: any[] } | any[]>(config, prompt);
+  const result = await callAIGeneric<{ suggestions: Record<string, unknown>[] } | Record<string, unknown>[]>(config, prompt);
   let suggestionsRaw = Array.isArray(result) ? result : (result?.suggestions || []);
   if (!Array.isArray(suggestionsRaw)) suggestionsRaw = [];
 
   return suggestionsRaw
-    .filter((s: any) => s && (typeof s === 'object') && (s.suggestion || s.field || s.reasoning))
-    .map((s: any) => ({
+    .filter((s: Record<string, unknown>) => s && (typeof s === 'object') && (s.suggestion || s.field || s.reasoning))
+    .map((s: Record<string, unknown>) => ({
       field: targetField,
-      suggestion: s.suggestion || s.field || 'Unknown',
-      reasoning: s.reasoning || '',
+      suggestion: (s.suggestion as string) || (s.field as string) || 'Unknown',
+      reasoning: (s.reasoning as string) || '',
     }));
 };
 
@@ -514,19 +518,19 @@ export const refineFailureMode = async (
     }
   `;
 
-  let result = await callAIGeneric<any>(config, prompt);
+  const rawResult = await callAIGeneric<Record<string, unknown> | Record<string, unknown>[]>(config, prompt);
 
   // Normalize wrapped responses in case the AI added a wrapper object or array
-  if (Array.isArray(result)) result = result[0] || {};
-  if (result.failureMode) result = result.failureMode;
-  if (Array.isArray(result.suggestions)) result = result.suggestions[0] || {};
+  let result: Record<string, unknown> = Array.isArray(rawResult) ? (rawResult[0] || {}) : (rawResult || {});
+  if (result.failureMode && typeof result.failureMode === 'object') result = result.failureMode as Record<string, unknown>;
+  if (Array.isArray(result.suggestions)) result = (result.suggestions[0] as Record<string, unknown>) || {};
 
   return {
     ...failureMode,
-    localEffect: result.localEffect || result.local_effect || failureMode.localEffect || '',
-    safetyMechanism: result.safetyMechanism || result.safety_mechanism || failureMode.safetyMechanism || '',
-    diagnosticCoverage: typeof result.diagnosticCoverage === 'number' ? result.diagnosticCoverage : (parseFloat(result.diagnosticCoverage) || failureMode.diagnosticCoverage || 0),
-    fitRate: typeof result.fitRate === 'number' ? result.fitRate : (parseFloat(result.fitRate) || failureMode.fitRate || 0),
+    localEffect: (result.localEffect as string) || (result.local_effect as string) || failureMode.localEffect || '',
+    safetyMechanism: (result.safetyMechanism as string) || (result.safety_mechanism as string) || failureMode.safetyMechanism || '',
+    diagnosticCoverage: typeof result.diagnosticCoverage === 'number' ? result.diagnosticCoverage : (parseFloat(result.diagnosticCoverage as string) || failureMode.diagnosticCoverage || 0),
+    fitRate: typeof result.fitRate === 'number' ? result.fitRate : (parseFloat(result.fitRate as string) || failureMode.fitRate || 0),
   } as FmedaFailureModeDeep;
 };
 

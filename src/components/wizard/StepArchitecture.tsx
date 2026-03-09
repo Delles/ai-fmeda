@@ -3,7 +3,8 @@ import {
   Layers, Cpu, CircuitBoard, ChevronDown, ChevronRight as ChevronRightIcon,
   Pencil, Trash2, Plus, Loader2, Sparkles, Check, X, ChevronLeft,
 } from 'lucide-react';
-import { FmedaSystemDeep, ProjectContext } from '@/types/ai';
+import { FmedaSystemDeep } from '@/types/ai';
+import type { ProjectContext } from '@/types/fmeda';
 import { useAIStore } from '@/store/aiStore';
 import { generateArchitecture } from '@/services/aiService';
 import { cn } from '@/lib/utils';
@@ -139,13 +140,21 @@ export const StepArchitecture: React.FC<StepArchitectureProps> = ({
 
   const toggleSystem = (idx: number) => {
     const next = new Set(expandedSystems);
-    next.has(idx) ? next.delete(idx) : next.add(idx);
+    if (next.has(idx)) {
+      next.delete(idx);
+    } else {
+      next.add(idx);
+    }
     setExpandedSystems(next);
   };
 
   const toggleSubsystem = (key: string) => {
     const next = new Set(expandedSubsystems);
-    next.has(key) ? next.delete(key) : next.add(key);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
     setExpandedSubsystems(next);
   };
 

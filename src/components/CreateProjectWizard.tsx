@@ -23,13 +23,14 @@ import {
   loadWizardDraft,
   saveWizardDraft,
 } from '../utils/wizardDraft';
+import { getCombinedDocumentText } from '../utils/projectDocuments';
 
 const INITIAL_STATE: WizardState = {
   projectName: '',
   safetyStandard: '',
   targetAsil: '',
   safetyGoal: '',
-  documentText: '',
+  documents: [],
   architecture: [],
   currentStep: 1,
   lastSavedAt: null,
@@ -203,7 +204,8 @@ export const CreateProjectWizard: React.FC<CreateProjectWizardProps> = ({ onComp
     safetyStandard: state.safetyStandard,
     targetAsil: state.targetAsil,
     safetyGoal: state.safetyGoal,
-    documentText: state.documentText,
+    documents: state.documents,
+    documentText: getCombinedDocumentText(state.documents),
   };
 
   const resetDraftState = () => {
@@ -334,7 +336,7 @@ export const CreateProjectWizard: React.FC<CreateProjectWizardProps> = ({ onComp
             safetyStandard={state.safetyStandard}
             targetAsil={state.targetAsil}
             safetyGoal={state.safetyGoal}
-            documentText={state.documentText}
+            documents={state.documents}
             onUpdate={(updates) => updateState(updates)}
             onNext={() => goToStep(2)}
           />

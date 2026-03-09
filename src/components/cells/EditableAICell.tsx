@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Sparkles, Loader2, Pencil } from 'lucide-react';
 import { AISuggestionContext, getAISuggestions } from '../../services/aiService';
 import { useAIStore } from '../../store/aiStore';
-import { useDocumentStore } from '../../store/documentStore';
+import { useFmedaStore } from '../../store/fmedaStore';
 import { FmedaFailureMode } from '../../types/fmeda';
 import { AISuggestion } from '../../types/ai';
 import { AISuggestionPanel } from '../AISuggestionPanel';
@@ -56,7 +56,7 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
 
   const { config } = useAIStore();
-  const { documents } = useDocumentStore();
+  const projectContext = useFmedaStore((state) => state.projectContext);
 
   useEffect(() => {
     setValue(initialValue || '');
@@ -146,7 +146,7 @@ export const EditableAICell: React.FC<EditableAICellProps> = ({
     setShowSuggestions(true);
 
     try {
-      const contextText = documents.map(d => d.extractedText).join('\n\n');
+      const contextText = projectContext?.documentText ?? '';
       const result = await getAISuggestions(config, aiContext, contextText, field);
       setSuggestions(result);
     } catch (error) {

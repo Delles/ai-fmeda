@@ -1,3 +1,5 @@
+import type { ProjectDocument } from './document';
+
 /**
  * Types of nodes in the FMEDA hierarchy.
  */
@@ -11,6 +13,7 @@ export interface ProjectContext {
   safetyStandard?: string;
   targetAsil?: string;
   safetyGoal?: string;
+  documents?: ProjectDocument[];
   documentText?: string;
 }
 
@@ -54,6 +57,8 @@ export interface FmedaNode {
   safeFit?: number;
   /** Dangerous FIT rate (failures that can lead to safety goal violation) */
   dangerousFit?: number;
+  /** Dangerous FIT rate covered by diagnostics */
+  detectedFit?: number;
   /** Average Diagnostic Coverage (0-1) for this node and its descendants */
   avgDc?: number;
 }

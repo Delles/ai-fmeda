@@ -1,22 +1,51 @@
-import { useState, useEffect } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
+import { FmedaSystemDeep } from './types/ai';
+import type { FmedaNode, ProjectContext } from './types/fmeda';
 import { Settings, Layout, Table as TableIcon, Home as HomeIcon, Download, ChevronDown, FileJson, FileCode, FileSpreadsheet } from 'lucide-react';
-import { FmedaTable } from './components/FmedaTable';
-import { SettingsModal } from './components/SettingsModal';
-import { Home } from './components/Home';
-import { CreateProjectWizard } from './components/CreateProjectWizard';
-import { useFmedaStore } from './store/fmedaStore';
+import { selectNodeCount, useFmedaStore } from './store/fmedaStore';
 import { GlobalConfirmDialog } from './components/ui/GlobalConfirmDialog';
-import { SidebarLeft } from './components/SidebarLeft';
 import { isLegacyFormat, migrateLegacyToFlat, flattenDeepHierarchy } from './utils/migration';
-import { DocumentUpload } from './components/DocumentUpload';
 import { Popover, PopoverContent, PopoverTrigger } from './components/ui/popover';
-import { exportToCsv, exportToExcel, exportToJson } from './utils/export';
 import { useAIStore } from './store/aiStore';
 import { Toaster, toast } from 'sonner';
 
+const FmedaTable = lazy(() =>
+  import('./components/FmedaTable').then((module) => ({ default: module.FmedaTable }))
+);
+const SettingsModal = lazy(() =>
+  import('./components/SettingsModal').then((module) => ({ default: module.SettingsModal }))
+);
+const Home = lazy(() =>
+  import('./components/Home').then((module) => ({ default: module.Home }))
+);
+const CreateProjectWizard = lazy(() =>
+  import('./components/CreateProjectWizard').then((module) => ({ default: module.CreateProjectWizard }))
+);
+const SidebarLeft = lazy(() =>
+  import('./components/SidebarLeft').then((module) => ({ default: module.SidebarLeft }))
+);
+const DocumentUpload = lazy(() =>
+  import('./components/DocumentUpload').then((module) => ({ default: module.DocumentUpload }))
+);
+
+type ExporterName = 'exportToJson' | 'exportToCsv' | 'exportToExcel';
+
+const SectionLoader = ({ label, className = '' }: { label: string; className?: string }) => (
+  <div className={`flex items-center justify-center rounded-xl border border-dashed border-gray-200 bg-gray-50/80 px-4 py-10 text-sm font-medium text-gray-500 ${className}`.trim()}>
+    {label}
+  </div>
+);
+
+const HeaderLoader = () => (
+  <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-400">
+    Loading tools...
+  </div>
+);
+
 function App() {
-  const { nodes, setNodes, setProjectContext } = useFmedaStore();
-  const nodeCount = Object.keys(nodes).length;
+  const nodeCount = useFmedaStore(selectNodeCount);
+  const setNodes = useFmedaStore((state) => state.setNodes);
+  const setProjectContext = useFmedaStore((state) => state.setProjectContext);
 
   const [currentView, setCurrentView] = useState<'home' | 'wizard' | 'table'>('home');
 
@@ -47,7 +76,7 @@ function App() {
         console.error('Failed to parse saved data for migration', e);
       }
     }
-  }, []);
+  }, [setNodes]);
 
   // Removed automatic routing to 'table' on startup to show the Home dashboard first
 
@@ -55,24 +84,30 @@ function App() {
 
   const runExport = async (
     formatLabel: string,
-    exporter: typeof exportToJson | typeof exportToCsv | typeof exportToExcel
+    exporterName: ExporterName
   ) => {
     try {
-      const result = await exporter(Object.values(nodes), useFmedaStore.getState().projectContext);
+      const exporters = await import('./utils/export');
+      const exporter = exporters[exporterName] as (
+        nodes: FmedaNode[],
+        projectContext: ProjectContext | null
+      ) => Promise<{ success: boolean; fileName?: string }>;
+      const { nodes, projectContext } = useFmedaStore.getState();
+      const result = await exporter(Object.values(nodes), projectContext);
       if (result && result.success) {
         toast.success(`${formatLabel} exported successfully`, {
           description: `Saved as ${result.fileName}`
         });
       }
     } catch (error) {
-      const description = error instanceof Error ? error.message : 'Please try again.';
+      const description = error instanceof Error ? error.message : (typeof error === 'string' ? error : "An unexpected error occurred during export.");
       toast.error(`Failed to export ${formatLabel}`, { description });
     }
   };
 
-  const handleJsonExport = () => runExport('JSON', exportToJson);
-  const handleCsvExport = () => runExport('CSV', exportToCsv);
-  const handleExcelExport = () => runExport('Excel workbook', exportToExcel);
+  const handleJsonExport = () => runExport('JSON', 'exportToJson');
+  const handleCsvExport = () => runExport('CSV', 'exportToCsv');
+  const handleExcelExport = () => runExport('Excel workbook', 'exportToExcel');
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
@@ -121,7 +156,9 @@ function App() {
         <div className="flex items-center space-x-3">
           {nodeCount > 0 && currentView === 'table' && (
             <div className="flex items-center gap-2 mr-2">
-              <DocumentUpload />
+              <Suspense fallback={<HeaderLoader />}>
+                <DocumentUpload />
+              </Suspense>
               <Popover>
                 <PopoverTrigger asChild>
                   <button
@@ -185,10 +222,12 @@ function App() {
         {currentView === 'home' && (
           <main className="flex-1 overflow-y-auto p-8">
             <div className="max-w-5xl mx-auto">
-              <Home
-                onNewProject={() => setCurrentView('wizard')}
-                onImportSuccess={() => setCurrentView('table')}
-              />
+              <Suspense fallback={<SectionLoader label="Loading dashboard..." />}>
+                <Home
+                  onNewProject={() => setCurrentView('wizard')}
+                  onImportSuccess={() => setCurrentView('table')}
+                />
+              </Suspense>
             </div>
           </main>
         )}
@@ -196,46 +235,57 @@ function App() {
         {currentView === 'wizard' && (
           <main className="flex-1 overflow-y-auto p-8">
             <div className="max-w-4xl mx-auto">
-              <CreateProjectWizard
-                onComplete={(migratedNodes, context) => {
-                  if (isLegacyFormat(migratedNodes)) {
-                    setNodes(migrateLegacyToFlat(migratedNodes));
-                  } else {
-                    setNodes(flattenDeepHierarchy(migratedNodes as any));
-                  }
+              <Suspense fallback={<SectionLoader label="Loading project wizard..." />}>
+                <CreateProjectWizard
+                  onComplete={(migratedNodes, context) => {
+                    if (isLegacyFormat(migratedNodes)) {
+                      setNodes(migrateLegacyToFlat(migratedNodes));
+                    } else {
+                      // migratedNodes is FmedaSystemDeep[] in this branch
+                      setNodes(flattenDeepHierarchy(migratedNodes as FmedaSystemDeep[]));
+                    }
 
-                  // Save the context
-                  setProjectContext({
-                    projectName: context.projectName,
-                    safetyStandard: context.safetyStandard,
-                    targetAsil: context.targetAsil,
-                    safetyGoal: context.safetyGoal,
-                    documentText: context.documentText,
-                  });
+                    // Save the context
+                    setProjectContext({
+                      projectName: context.projectName,
+                      safetyStandard: context.safetyStandard,
+                      targetAsil: context.targetAsil,
+                      safetyGoal: context.safetyGoal,
+                      documents: context.documents,
+                    });
 
-                  useFmedaStore.getState().setSelectedId(null);
-                  setCurrentView('table');
-                }}
-                onCancel={() => setCurrentView('home')}
-              />
+                    useFmedaStore.getState().setSelectedId(null);
+                    setCurrentView('table');
+                  }}
+                  onCancel={() => setCurrentView('home')}
+                />
+              </Suspense>
             </div>
           </main>
         )}
 
         {currentView === 'table' && (
           <>
-            <SidebarLeft />
+            <Suspense fallback={<SectionLoader label="Loading hierarchy..." className="m-4 w-80 flex-shrink-0" />}>
+              <SidebarLeft />
+            </Suspense>
 
             <main className="flex-1 flex flex-col min-w-0 bg-white overflow-hidden">
               <div className="flex-1 overflow-auto p-6">
-                <FmedaTable />
+                <Suspense fallback={<SectionLoader label="Loading analysis workspace..." className="min-h-[320px]" />}>
+                  <FmedaTable />
+                </Suspense>
               </div>
             </main>
           </>
         )}
       </div>
 
-      {isSettingsOpen && <SettingsModal onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal onClose={() => setIsSettingsOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }

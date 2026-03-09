@@ -105,7 +105,7 @@ export const EditableTextCell: React.FC<EditableTextCellProps> = ({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={`group relative text-left w-full cursor-pointer hover:bg-white/50 px-2 py-1 rounded block min-h-[1.5rem] border border-transparent hover:border-gray-200 hover:shadow-sm transition-all ${!value ? 'text-gray-400 italic' : ''} ${className}`}
+          className={`group relative block min-h-[1.5rem] w-full cursor-pointer rounded border border-transparent px-2 py-1 text-left transition-all hover:border-gray-200 hover:bg-white/50 hover:shadow-sm whitespace-pre-wrap break-words ${!value ? 'text-gray-400 italic' : ''} ${className}`}
         >
           {value || placeholder}
           <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">

@@ -4,7 +4,8 @@ import {
   CircuitBoard, Settings, Square, Rocket,
   Shield,
 } from 'lucide-react';
-import { FmedaSystemDeep, FmedaFunctionDeep, ProjectContext } from '@/types/ai';
+import { FmedaSystemDeep, FmedaFunctionDeep } from '@/types/ai';
+import type { ProjectContext } from '@/types/fmeda';
 import { useAIStore } from '@/store/aiStore';
 import { generateFailureModesForFunction } from '@/services/aiService';
 import { cn } from '@/lib/utils';

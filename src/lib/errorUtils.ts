@@ -3,23 +3,24 @@ export interface AIErrorResponse {
     code: number;
     message: string;
     status?: string;
-    details?: any[];
+    details?: unknown[];
   };
 }
 
-export function formatAIError(error: any): { title: string; message: string; isQuota: boolean; icon: "error" | "warning" | "info" } {
+export function formatAIError(error: unknown): { title: string; message: string; isQuota: boolean; icon: "error" | "warning" | "info" } {
   const defaultTitle = "AI Generation Failed";
-  const defaultMessage = typeof error === 'string' ? error : (error.message || "An unexpected error occurred during AI generation.");
+  const errorObj = (error && typeof error === 'object') ? (error as Record<string, unknown>) : null;
+  const defaultMessage = typeof error === 'string' ? error : (String(errorObj?.message || error) || "An unexpected error occurred during AI generation.");
   const defaultIcon = "error";
 
   // Try to parse JSON error (like Gemini 429)
   let parsed: AIErrorResponse | null = null;
   try {
-    if (typeof error.message === 'string' && error.message.includes('{')) {
-      const jsonStr = error.message.substring(error.message.indexOf('{'));
+    if (errorObj && typeof errorObj.message === 'string' && errorObj.message.includes('{')) {
+      const jsonStr = errorObj.message.substring(errorObj.message.indexOf('{'));
       parsed = JSON.parse(jsonStr);
-    } else if (error.description && typeof error.description === 'string' && error.description.includes('{')) {
-      const jsonStr = error.description.substring(error.description.indexOf('{'));
+    } else if (errorObj && typeof errorObj.description === 'string' && errorObj.description.includes('{')) {
+      const jsonStr = errorObj.description.substring(errorObj.description.indexOf('{'));
       parsed = JSON.parse(jsonStr);
     }
   } catch {

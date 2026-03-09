@@ -4,7 +4,8 @@ import {
   Plus, Trash2, Check, X, Cpu, CircuitBoard, Layers,
   Square,
 } from 'lucide-react';
-import { FmedaSystemDeep, FmedaFunctionDeep, ProjectContext } from '@/types/ai';
+import { FmedaSystemDeep, FmedaFunctionDeep } from '@/types/ai';
+import type { ProjectContext } from '@/types/fmeda';
 import { useAIStore } from '@/store/aiStore';
 import { generateFunctionsForComponent } from '@/services/aiService';
 import { cn } from '@/lib/utils';

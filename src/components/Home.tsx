@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target, Clock3 } from 'lucide-react';
-import { useFmedaStore } from '../store/fmedaStore';
+import { selectHomeSummary, useFmedaStore } from '../store/fmedaStore';
 import { importProjectFile } from '../utils/export';
 import { useConfirm } from '../hooks/useConfirm';
 import { getWizardDraftSummary, type WizardDraftSummary } from '../utils/wizardDraft';
@@ -20,7 +20,8 @@ const formatSavedAt = (timestamp: number): string => {
 };
 
 export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => {
-  const { nodes, setNodes, projectContext } = useFmedaStore();
+  const { hasProject, componentCount, functionCount, failureModeCount, projectContext } = useFmedaStore(selectHomeSummary);
+  const setNodes = useFmedaStore((state) => state.setNodes);
   const confirm = useConfirm();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [wizardDraft, setWizardDraft] = useState<WizardDraftSummary | null>(() => getWizardDraftSummary());
@@ -39,13 +40,6 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
     };
   }, []);
 
-  const nodesList = Object.values(nodes);
-  const hasProject = nodesList.length > 0;
-
-  const componentsCount = nodesList.filter((n) => n.type === 'Component').length;
-  const functionsCount = nodesList.filter((n) => n.type === 'Function').length;
-  const failureModesCount = nodesList.filter((n) => n.type === 'FailureMode').length;
-
   const handleImportClick = () => {
     fileInputRef.current?.click();
   };
@@ -59,10 +53,11 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
         useFmedaStore.getState().setProjectContext(result.projectContext);
         useFmedaStore.getState().setSelectedId(null);
         onImportSuccess();
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'An unexpected error occurred during import.';
         await confirm({
           title: 'Import Failed',
-          description: error.message || 'An unexpected error occurred during import.',
+          description: message,
           type: 'alert',
           variant: 'destructive',
         });
@@ -94,15 +89,15 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
               <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4">
                 <div className="flex gap-10 mb-6 md:mb-0">
                   <div className="flex flex-col">
-                    <span className="text-4xl font-extrabold text-slate-800">{componentsCount}</span>
+                    <span className="text-4xl font-extrabold text-slate-800">{componentCount}</span>
                     <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Components</span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-4xl font-extrabold text-slate-800">{functionsCount}</span>
+                    <span className="text-4xl font-extrabold text-slate-800">{functionCount}</span>
                     <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Functions</span>
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-4xl font-extrabold text-slate-800">{failureModesCount}</span>
+                    <span className="text-4xl font-extrabold text-slate-800">{failureModeCount}</span>
                     <span className="text-sm font-semibold text-slate-500 uppercase tracking-wider mt-1">Failure Modes</span>
                   </div>
                 </div>

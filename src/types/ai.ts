@@ -1,3 +1,7 @@
+import type { ProjectDocument } from './document';
+
+export type { ProjectContext } from './fmeda';
+
 export interface AISuggestion {
   field: string;
   suggestion: string;
@@ -45,14 +49,6 @@ export interface FmedaSystemDeep {
   subsystems?: FmedaSubsystemDeep[];
 }
 
-export interface ProjectContext {
-  projectName?: string;
-  safetyStandard?: string;
-  targetAsil?: string;
-  safetyGoal?: string;
-  documentText?: string;
-}
-
 export type WizardStepNumber = 1 | 2 | 3 | 4;
 
 export interface WizardState {
@@ -61,7 +57,7 @@ export interface WizardState {
   safetyStandard: string;
   targetAsil: string;
   safetyGoal: string;
-  documentText: string;
+  documents: ProjectDocument[];
   /** Step 2+ — Generated/edited architecture */
   architecture: FmedaSystemDeep[];
   /** Current wizard step */

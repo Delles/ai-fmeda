@@ -1,6 +1,7 @@
 import { FmedaNode, FmedaNodeType, ProjectContext } from '../types/fmeda';
 import { generateId } from './id';
 import { isLegacyFormat, migrateLegacyToFlat } from './migration';
+import { normalizeProjectContext } from './projectDocuments';
 
 const JSON_MIME = 'application/json';
 const CSV_MIME = 'text/csv;charset=utf-8';
@@ -121,7 +122,12 @@ const saveBlob = async (
 ): Promise<ExportResult> => {
   try {
     if ('showSaveFilePicker' in window) {
-      const handle = await (window as any).showSaveFilePicker({
+      const handle = await (window as unknown as {
+        showSaveFilePicker: (options: unknown) => Promise<{
+          createWritable: () => Promise<{ write: (blob: Blob) => Promise<void>; close: () => Promise<void> }>;
+          name: string;
+        }>
+      }).showSaveFilePicker({
         suggestedName,
         types: [
           {
@@ -135,8 +141,8 @@ const saveBlob = async (
       await writable.close();
       return { success: true, fileName: handle.name };
     }
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') {
       return { success: false };
     }
 
@@ -331,10 +337,10 @@ const buildExportDataset = (nodes: FmedaNode[], projectContext: ProjectContext |
   return { hierarchyRows, failureModeRows, summary };
 };
 
-const styleWorksheetHeader = (worksheet: any, rowNumber: number, fillColor = '1D4ED8') => {
+const styleWorksheetHeader = (worksheet: import('exceljs').Worksheet, rowNumber: number, fillColor = '1D4ED8') => {
   const row = worksheet.getRow(rowNumber);
   row.height = 22;
-  row.eachCell((cell: any) => {
+  row.eachCell((cell: import('exceljs').Cell) => {
     cell.fill = solidFill(fillColor);
     cell.font = { bold: true, color: { argb: 'FFFFFF' } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
@@ -372,7 +378,7 @@ const getOverviewRiskSignal = (summary: ExportSummary) => {
   };
 };
 
-const addOverviewSheet = (workbook: any, summary: ExportSummary) => {
+const addOverviewSheet = (workbook: import('exceljs').Workbook, summary: ExportSummary) => {
   const riskSignal = getOverviewRiskSignal(summary);
   const sheet = workbook.addWorksheet('Overview', {
     views: [{ state: 'frozen', ySplit: 3 }],
@@ -561,7 +567,7 @@ const addOverviewSheet = (workbook: any, summary: ExportSummary) => {
         item.path,
       ]);
 
-      row.eachCell((cell: any) => {
+      row.eachCell((cell: import('exceljs').Cell) => {
         cell.border = thinBorder;
         cell.alignment = { vertical: 'top', wrapText: true };
       });
@@ -576,7 +582,7 @@ const addOverviewSheet = (workbook: any, summary: ExportSummary) => {
   sheet.getRow(10).height = 24;
 };
 
-const addHierarchySheet = (workbook: any, rows: HierarchyExportRow[]) => {
+const addHierarchySheet = (workbook: import('exceljs').Workbook, rows: HierarchyExportRow[]) => {
   const sheet = workbook.addWorksheet('Hierarchy', {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
@@ -611,7 +617,7 @@ const addHierarchySheet = (workbook: any, rows: HierarchyExportRow[]) => {
     const palette = TYPE_COLORS[rowData.nodeType];
 
     row.outlineLevel = Math.min(rowData.level, 7);
-    row.eachCell((cell: any) => {
+    row.eachCell((cell: import('exceljs').Cell) => {
       cell.fill = solidFill(palette.fill);
       cell.border = thinBorder;
       cell.alignment = { vertical: 'top', wrapText: true };
@@ -642,7 +648,7 @@ const addHierarchySheet = (workbook: any, rows: HierarchyExportRow[]) => {
   });
 };
 
-const addFailureModesSheet = (workbook: any, rows: FailureModeExportRow[]) => {
+const addFailureModesSheet = (workbook: import('exceljs').Workbook, rows: FailureModeExportRow[]) => {
   const sheet = workbook.addWorksheet('Failure Modes', {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
@@ -670,7 +676,7 @@ const addFailureModesSheet = (workbook: any, rows: FailureModeExportRow[]) => {
 
   rows.forEach((rowData) => {
     const row = sheet.addRow(rowData);
-    row.eachCell((cell: any) => {
+    row.eachCell((cell: import('exceljs').Cell) => {
       cell.border = thinBorder;
       cell.alignment = { vertical: 'top', wrapText: true };
     });
@@ -791,10 +797,10 @@ export const exportToExcel = async (nodes: FmedaNode[], projectContext: ProjectC
 /**
  * Validates if an object matches the FmedaNode structure.
  */
-const isFmedaNode = (obj: any): obj is FmedaNode => {
+const isFmedaNode = (value: unknown): value is FmedaNode => {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
   return (
-    typeof obj === 'object' &&
-    obj !== null &&
     typeof obj.id === 'string' &&
     typeof obj.name === 'string' &&
     typeof obj.type === 'string' &&
@@ -947,7 +953,7 @@ const readJsonFile = async (file: File): Promise<ImportResult> => {
   if (!Array.isArray(json) && typeof json === 'object' && json !== null && 'nodes' in json) {
     const exportPayload = json as { nodes: unknown; projectContext?: ProjectContext | null };
     nodesData = exportPayload.nodes;
-    projectContext = exportPayload.projectContext || null;
+    projectContext = normalizeProjectContext(exportPayload.projectContext);
   }
 
   if (!Array.isArray(nodesData)) {
@@ -1206,11 +1212,11 @@ const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<str
   return nodes;
 };
 
-const getWorksheetRecords = (worksheet: any): WorksheetRecord[] => {
+const getWorksheetRecords = (worksheet: import('exceljs').Worksheet): WorksheetRecord[] => {
   const headerRow = worksheet.getRow(1);
   const headers: string[] = [];
 
-  headerRow.eachCell({ includeEmpty: true }, (cell: any, columnNumber: number) => {
+  headerRow.eachCell({ includeEmpty: true }, (cell: import('exceljs').Cell, columnNumber: number) => {
     headers[columnNumber - 1] = normalizeText(cell.value);
   });
 
@@ -1257,7 +1263,7 @@ const parseNodeTypeLabel = (value: unknown): FmedaNodeType | null => {
   }
 };
 
-const parseHierarchyWorksheet = (worksheet: any): Record<string, FmedaNode> => {
+const parseHierarchyWorksheet = (worksheet: import('exceljs').Worksheet): Record<string, FmedaNode> => {
   const rows = getWorksheetRecords(worksheet);
   if (rows.length === 0) {
     throw new Error('The Excel hierarchy sheet is empty.');
@@ -1317,7 +1323,7 @@ const parseHierarchyWorksheet = (worksheet: any): Record<string, FmedaNode> => {
   return nodes;
 };
 
-const parseFailureModeWorksheet = (worksheet: any): FailureModeImportRow[] => {
+const parseFailureModeWorksheet = (worksheet: import('exceljs').Worksheet): FailureModeImportRow[] => {
   const rows = getWorksheetRecords(worksheet);
 
   if (rows.length === 0) {
@@ -1343,17 +1349,15 @@ const parseFailureModeWorksheet = (worksheet: any): FailureModeImportRow[] => {
     .filter((row) => row.failureMode);
 };
 
-const parseOverviewContext = (worksheet: any): ProjectContext | null => {
+const parseOverviewContext = (worksheet: import('exceljs').Worksheet | undefined): ProjectContext | null => {
   if (!worksheet) return null;
 
-  const projectContext: ProjectContext = {
+  return normalizeProjectContext({
     projectName: normalizeProjectContextValue(normalizeText(worksheet.getCell('B10').value)),
     safetyStandard: normalizeProjectContextValue(normalizeText(worksheet.getCell('B11').value)),
     targetAsil: normalizeProjectContextValue(normalizeText(worksheet.getCell('B12').value)),
     safetyGoal: normalizeProjectContextValue(normalizeText(worksheet.getCell('B13').value)),
-  };
-
-  return Object.values(projectContext).some(Boolean) ? projectContext : null;
+  });
 };
 
 const readExcelFile = async (file: File): Promise<ImportResult> => {
