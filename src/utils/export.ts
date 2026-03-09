@@ -1,12 +1,19 @@
+import type { ProjectDocument } from '../types/document';
 import { FmedaNode, FmedaNodeType, ProjectContext } from '../types/fmeda';
 import { generateId } from './id';
 import { isLegacyFormat, migrateLegacyToFlat } from './migration';
-import { normalizeProjectContext } from './projectDocuments';
+import { normalizeProjectContext, normalizeProjectDocuments } from './projectDocuments';
 
 const JSON_MIME = 'application/json';
 const CSV_MIME = 'text/csv;charset=utf-8';
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const EXPORT_APP_NAME = 'FMEDA Pro';
+const EXCEL_WORKBOOK_VERSION = '2';
+const HIERARCHY_SHEET_NAME = 'Hierarchy';
+const FAILURE_MODES_SHEET_NAME = 'Failure Modes';
+const DOCUMENTS_SHEET_NAME = 'Project Documents';
+const OVERVIEW_SHEET_NAME = 'Overview';
+const METADATA_SHEET_NAME = '_FMEDA';
 
 const TYPE_LABELS: Record<FmedaNodeType, string> = {
   System: 'System',
@@ -44,6 +51,8 @@ interface HierarchyContext {
 }
 
 interface HierarchyExportRow {
+  nodeId: string;
+  parentNodeId: string;
   level: number;
   nodeType: FmedaNodeType;
   nodeName: string;
@@ -66,6 +75,12 @@ interface HierarchyExportRow {
 }
 
 interface FailureModeExportRow {
+  nodeId: string;
+  parentNodeId: string;
+  systemId: string;
+  subsystemId: string;
+  componentId: string;
+  functionId: string;
   system: string;
   subsystem: string;
   component: string;
@@ -81,6 +96,14 @@ interface FailureModeExportRow {
   asil: string;
   safetyGoal: string;
   path: string;
+}
+
+interface ProjectDocumentExportRow {
+  documentId: string;
+  kind: 'uploaded' | 'notes';
+  name: string;
+  uploadedAt: string;
+  extractedText: string;
 }
 
 interface ExportSummary {
@@ -210,6 +233,13 @@ const buildExportDataset = (nodes: FmedaNode[], projectContext: ProjectContext |
 
   const hierarchyRows: HierarchyExportRow[] = [];
   const failureModeRows: FailureModeExportRow[] = [];
+  const documentRows: ProjectDocumentExportRow[] = normalizeProjectDocuments(projectContext?.documents).map((document) => ({
+    documentId: document.id,
+    kind: document.kind ?? 'uploaded',
+    name: document.name,
+    uploadedAt: document.uploadedAt,
+    extractedText: document.extractedText,
+  }));
   const counts: Record<FmedaNodeType, number> = {
     System: 0,
     Subsystem: 0,
@@ -234,6 +264,8 @@ const buildExportDataset = (nodes: FmedaNode[], projectContext: ProjectContext |
 
     const currentPath = [...path, node.name];
     hierarchyRows.push({
+      nodeId: node.id,
+      parentNodeId: node.parentId ?? '',
       level,
       nodeType: node.type,
       nodeName: node.name,
@@ -267,7 +299,17 @@ const buildExportDataset = (nodes: FmedaNode[], projectContext: ProjectContext |
 
     if (node.type === 'FailureMode') {
       const metrics = buildFailureModeMetrics(node);
+      const functionNode = node.parentId ? nodeMap[node.parentId] : null;
+      const componentNode = functionNode?.parentId ? nodeMap[functionNode.parentId] : null;
+      const subsystemNode = componentNode?.parentId ? nodeMap[componentNode.parentId] : null;
+      const systemNode = subsystemNode?.parentId ? nodeMap[subsystemNode.parentId] : null;
       failureModeRows.push({
+        nodeId: node.id,
+        parentNodeId: node.parentId ?? '',
+        systemId: systemNode?.id ?? '',
+        subsystemId: subsystemNode?.id ?? '',
+        componentId: componentNode?.id ?? '',
+        functionId: functionNode?.id ?? '',
         system: nextLineage.system,
         subsystem: nextLineage.subsystem,
         component: nextLineage.component,
@@ -334,7 +376,7 @@ const buildExportDataset = (nodes: FmedaNode[], projectContext: ProjectContext |
       .slice(0, 5),
   };
 
-  return { hierarchyRows, failureModeRows, summary };
+  return { hierarchyRows, failureModeRows, documentRows, summary };
 };
 
 const styleWorksheetHeader = (worksheet: import('exceljs').Worksheet, rowNumber: number, fillColor = '1D4ED8') => {
@@ -345,6 +387,12 @@ const styleWorksheetHeader = (worksheet: import('exceljs').Worksheet, rowNumber:
     cell.font = { bold: true, color: { argb: 'FFFFFF' } };
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     cell.border = thinBorder;
+  });
+};
+
+const hideWorksheetColumns = (worksheet: import('exceljs').Worksheet, keys: string[]) => {
+  keys.forEach((key) => {
+    worksheet.getColumn(key).hidden = true;
   });
 };
 
@@ -380,7 +428,7 @@ const getOverviewRiskSignal = (summary: ExportSummary) => {
 
 const addOverviewSheet = (workbook: import('exceljs').Workbook, summary: ExportSummary) => {
   const riskSignal = getOverviewRiskSignal(summary);
-  const sheet = workbook.addWorksheet('Overview', {
+  const sheet = workbook.addWorksheet(OVERVIEW_SHEET_NAME, {
     views: [{ state: 'frozen', ySplit: 3 }],
   });
 
@@ -580,14 +628,85 @@ const addOverviewSheet = (workbook: import('exceljs').Workbook, summary: ExportS
   }
 
   sheet.getRow(10).height = 24;
+
+  const guidanceStartRow = headerRow.number + Math.max(summary.topRiskItems.length, 1) + 3;
+  sheet.mergeCells(`A${guidanceStartRow}:H${guidanceStartRow}`);
+  sheet.getCell(`A${guidanceStartRow}`).value = 'Workbook Editing Guide';
+  sheet.getCell(`A${guidanceStartRow}`).font = { bold: true, color: { argb: 'FFFFFF' } };
+  sheet.getCell(`A${guidanceStartRow}`).fill = solidFill('0F766E');
+  sheet.getCell(`A${guidanceStartRow}`).alignment = { horizontal: 'center' };
+  sheet.getCell(`A${guidanceStartRow}`).border = thinBorder;
+
+  const guidanceRows = [
+    ['Use "Failure Modes" for fast leaf editing, sorting, and filtering of FIT/DC/classification values.'],
+    ['Use "Hierarchy" to rename nodes, add/remove structure, or preserve empty branches with no failure modes yet.'],
+    ['Use "Project Documents" to keep notes and extracted source text that should survive Excel re-import.'],
+  ];
+  guidanceRows.forEach((values, index) => {
+    const rowNumber = guidanceStartRow + 1 + index;
+    sheet.mergeCells(`A${rowNumber}:H${rowNumber}`);
+    sheet.getCell(`A${rowNumber}`).value = values[0];
+    sheet.getCell(`A${rowNumber}`).alignment = { wrapText: true, vertical: 'top' };
+    sheet.getCell(`A${rowNumber}`).border = thinBorder;
+    sheet.getCell(`A${rowNumber}`).fill = solidFill(index % 2 === 0 ? 'F8FAFC' : 'FFFFFF');
+  });
 };
 
-const addHierarchySheet = (workbook: import('exceljs').Workbook, rows: HierarchyExportRow[]) => {
-  const sheet = workbook.addWorksheet('Hierarchy', {
+const addProjectDocumentsSheet = (
+  workbook: import('exceljs').Workbook,
+  documents: ProjectDocumentExportRow[]
+) => {
+  const sheet = workbook.addWorksheet(DOCUMENTS_SHEET_NAME, {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
 
   sheet.columns = [
+    { header: 'Document ID', key: 'documentId', width: 18 },
+    { header: 'Kind', key: 'kind', width: 12 },
+    { header: 'Name', key: 'name', width: 28 },
+    { header: 'Uploaded At', key: 'uploadedAt', width: 22 },
+    { header: 'Extracted Text', key: 'extractedText', width: 90 },
+  ];
+
+  styleWorksheetHeader(sheet, 1, '7C3AED');
+  sheet.autoFilter = 'A1:E1';
+
+  documents.forEach((document, index) => {
+    const row = sheet.addRow(document);
+    row.eachCell((cell: import('exceljs').Cell) => {
+      cell.border = thinBorder;
+      cell.alignment = { vertical: 'top', wrapText: true };
+      cell.fill = solidFill(index % 2 === 0 ? 'FAF5FF' : 'FFFFFF');
+    });
+  });
+
+  hideWorksheetColumns(sheet, ['documentId']);
+};
+
+const addMetadataSheet = (workbook: import('exceljs').Workbook) => {
+  const sheet = workbook.addWorksheet(METADATA_SHEET_NAME);
+  sheet.state = 'veryHidden';
+  sheet.columns = [
+    { header: 'Key', key: 'key', width: 24 },
+    { header: 'Value', key: 'value', width: 40 },
+  ];
+  sheet.addRows([
+    { key: 'app', value: EXPORT_APP_NAME },
+    { key: 'workbookVersion', value: EXCEL_WORKBOOK_VERSION },
+    { key: 'hierarchySheet', value: HIERARCHY_SHEET_NAME },
+    { key: 'failureModesSheet', value: FAILURE_MODES_SHEET_NAME },
+    { key: 'documentsSheet', value: DOCUMENTS_SHEET_NAME },
+  ]);
+};
+
+const addHierarchySheet = (workbook: import('exceljs').Workbook, rows: HierarchyExportRow[]) => {
+  const sheet = workbook.addWorksheet(HIERARCHY_SHEET_NAME, {
+    views: [{ state: 'frozen', ySplit: 1 }],
+  });
+
+  sheet.columns = [
+    { header: 'Node ID', key: 'nodeId', width: 18 },
+    { header: 'Parent Node ID', key: 'parentNodeId', width: 18 },
     { header: 'Level', key: 'level', width: 8 },
     { header: 'Node Type', key: 'nodeType', width: 14 },
     { header: 'Name', key: 'nodeName', width: 30 },
@@ -610,7 +729,7 @@ const addHierarchySheet = (workbook: import('exceljs').Workbook, rows: Hierarchy
   ];
 
   styleWorksheetHeader(sheet, 1, '1D4ED8');
-  sheet.autoFilter = 'A1:S1';
+  sheet.autoFilter = 'A1:U1';
 
   rows.forEach((rowData) => {
     const row = sheet.addRow(rowData);
@@ -646,14 +765,22 @@ const addHierarchySheet = (workbook: import('exceljs').Workbook, rows: Hierarchy
       };
     }
   });
+
+  hideWorksheetColumns(sheet, ['nodeId', 'parentNodeId']);
 };
 
 const addFailureModesSheet = (workbook: import('exceljs').Workbook, rows: FailureModeExportRow[]) => {
-  const sheet = workbook.addWorksheet('Failure Modes', {
+  const sheet = workbook.addWorksheet(FAILURE_MODES_SHEET_NAME, {
     views: [{ state: 'frozen', ySplit: 1 }],
   });
 
   sheet.columns = [
+    { header: 'Failure Mode ID', key: 'nodeId', width: 18 },
+    { header: 'Parent Function ID', key: 'parentNodeId', width: 18 },
+    { header: 'System ID', key: 'systemId', width: 18 },
+    { header: 'Subsystem ID', key: 'subsystemId', width: 18 },
+    { header: 'Component ID', key: 'componentId', width: 18 },
+    { header: 'Function ID', key: 'functionId', width: 18 },
     { header: 'System', key: 'system', width: 18 },
     { header: 'Subsystem', key: 'subsystem', width: 18 },
     { header: 'Component', key: 'component', width: 20 },
@@ -672,7 +799,7 @@ const addFailureModesSheet = (workbook: import('exceljs').Workbook, rows: Failur
   ];
 
   styleWorksheetHeader(sheet, 1, '0F766E');
-  sheet.autoFilter = 'A1:O1';
+  sheet.autoFilter = 'A1:U1';
 
   rows.forEach((rowData) => {
     const row = sheet.addRow(rowData);
@@ -691,6 +818,8 @@ const addFailureModesSheet = (workbook: import('exceljs').Workbook, rows: Failur
     row.getCell('safeFit').numFmt = '0.00';
     row.getCell('dangerousFit').numFmt = '0.00';
   });
+
+  hideWorksheetColumns(sheet, ['nodeId', 'parentNodeId', 'systemId', 'subsystemId', 'componentId', 'functionId']);
 };
 
 /**
@@ -767,7 +896,7 @@ export const exportToCsv = async (nodes: FmedaNode[], projectContext: ProjectCon
 };
 
 export const exportToExcel = async (nodes: FmedaNode[], projectContext: ProjectContext | null): Promise<ExportResult> => {
-  const { hierarchyRows, failureModeRows, summary } = buildExportDataset(nodes, projectContext);
+  const { hierarchyRows, failureModeRows, documentRows, summary } = buildExportDataset(nodes, projectContext);
   const exportFileDefaultName = getExportFileName(projectContext?.projectName, 'xlsx');
   const ExcelJS = await import('exceljs');
   const workbook = new ExcelJS.Workbook();
@@ -781,8 +910,10 @@ export const exportToExcel = async (nodes: FmedaNode[], projectContext: ProjectC
   workbook.company = EXPORT_APP_NAME;
 
   addOverviewSheet(workbook, summary);
+  addProjectDocumentsSheet(workbook, documentRows);
   addHierarchySheet(workbook, hierarchyRows);
   addFailureModesSheet(workbook, failureModeRows);
+  addMetadataSheet(workbook);
 
   const buffer = await workbook.xlsx.writeBuffer();
 
@@ -817,6 +948,12 @@ export interface ImportResult {
 type SupportedImportFormat = 'json' | 'csv' | 'xlsx';
 
 interface FailureModeImportRow {
+  nodeId?: string;
+  parentNodeId?: string;
+  systemId?: string;
+  subsystemId?: string;
+  componentId?: string;
+  functionId?: string;
   system: string;
   subsystem: string;
   component: string;
@@ -830,6 +967,27 @@ interface FailureModeImportRow {
   asil: string;
   safetyGoal: string;
   path: string;
+}
+
+interface HierarchyImportRow {
+  rowNumber: number;
+  nodeId?: string;
+  parentNodeId?: string;
+  level: number;
+  nodeType: FmedaNodeType;
+  name: string;
+  system: string;
+  subsystem: string;
+  component: string;
+  functionName: string;
+  failureMode: string;
+  localEffect: string;
+  safetyMechanism: string;
+  classification: 'Safe' | 'Dangerous';
+  diagnosticCoverage: number;
+  fitRate: number;
+  asil: string;
+  safetyGoal: string;
 }
 
 interface WorksheetRecord {
@@ -1054,6 +1212,23 @@ const getColumnValue = (row: string[], headerIndexes: Record<string, number>, al
   return '';
 };
 
+const getRecordValue = (record: WorksheetRecord, aliases: string[]): unknown => {
+  const entries = Object.entries(record);
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeHeader(alias);
+    const match = entries.find(([key]) => normalizeHeader(key) === normalizedAlias);
+    if (match) {
+      return match[1];
+    }
+  }
+  return '';
+};
+
+const normalizeOptionalId = (value: unknown): string | undefined => {
+  const text = normalizeText(value);
+  return text || undefined;
+};
+
 const parseFailureModeRowsFromCsv = (text: string): FailureModeImportRow[] => {
   const rows = parseCsvText(text).filter((row) => row.some((cell) => normalizeText(cell) !== ''));
 
@@ -1107,53 +1282,118 @@ const deriveProjectNameFromFileName = (fileName: string): string | undefined => 
   return cleaned.replace(/\b\w/g, (match) => match.toUpperCase());
 };
 
-const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<string, FmedaNode> => {
+const createNodeKey = (type: FmedaNodeType, parentId: string | null, name: string) =>
+  `${parentId ?? 'root'}|${type}|${name.trim().toLowerCase()}`;
+
+const appendChildId = (nodes: Record<string, FmedaNode>, parentId: string | null, childId: string) => {
+  if (!parentId || !nodes[parentId]) return;
+  if (!nodes[parentId].childIds.includes(childId)) {
+    nodes[parentId] = {
+      ...nodes[parentId],
+      childIds: [...nodes[parentId].childIds, childId],
+    };
+  }
+};
+
+const removeChildId = (nodes: Record<string, FmedaNode>, parentId: string | null, childId: string) => {
+  if (!parentId || !nodes[parentId]) return;
+  if (nodes[parentId].childIds.includes(childId)) {
+    nodes[parentId] = {
+      ...nodes[parentId],
+      childIds: nodes[parentId].childIds.filter((currentChildId) => currentChildId !== childId),
+    };
+  }
+};
+
+const finalizeImportedNodes = (nodes: Record<string, FmedaNode>): Record<string, FmedaNode> => {
+  Object.values(nodes).forEach((node) => {
+    nodes[node.id] = {
+      ...node,
+      childIds: Array.from(new Set(node.childIds)).filter((childId) => nodes[childId]?.parentId === node.id),
+    };
+  });
+
+  return nodes;
+};
+
+const buildNodesFromFailureModeRows = (
+  rows: FailureModeImportRow[],
+  existingNodes: Record<string, FmedaNode> = {}
+): Record<string, FmedaNode> => {
   if (rows.length === 0) {
     throw new Error('No importable failure mode rows were found in the file.');
   }
 
-  const nodes: Record<string, FmedaNode> = {};
+  const nodes: Record<string, FmedaNode> = Object.fromEntries(
+    Object.values(existingNodes).map((node) => [
+      node.id,
+      {
+        ...node,
+        childIds: [...node.childIds],
+      },
+    ])
+  );
+  const preserveSeedHierarchy = Object.keys(existingNodes).length > 0;
+  const usedIds = new Set(Object.keys(nodes));
   const nodeKeys = new Map<string, string>();
+  const seenFailureModeRowIds = new Set<string>();
+
+  Object.values(nodes).forEach((node) => {
+    nodeKeys.set(createNodeKey(node.type, node.parentId, node.name), node.id);
+  });
 
   const ensureNode = (
     type: Exclude<FmedaNodeType, 'FailureMode'>,
     name: string,
     parentId: string | null,
-    metadata?: Partial<FmedaNode>
+    metadata?: Partial<FmedaNode>,
+    preferredId?: string
   ) => {
     const trimmedName = name.trim();
     if (!trimmedName) return null;
 
-    const key = `${parentId ?? 'root'}|${type}|${trimmedName.toLowerCase()}`;
-    const existingId = nodeKeys.get(key);
-    if (existingId) {
-      if (metadata && (type === 'System' || type === 'Subsystem' || type === 'Component')) {
-        nodes[existingId] = {
-          ...nodes[existingId],
-          asil: nodes[existingId].asil || metadata.asil,
-          safetyGoal: nodes[existingId].safetyGoal || metadata.safetyGoal,
-        };
-      }
-      return existingId;
+    if (preserveSeedHierarchy && preferredId && existingNodes[preferredId]) {
+      return preferredId;
     }
 
-    const id = generateId();
+    const key = createNodeKey(type, parentId, trimmedName);
+    const existingId = nodeKeys.get(key);
+    let id = existingId;
+
+    if (!id && preferredId && nodes[preferredId]) {
+      id = preferredId;
+    }
+
+    if (!id) {
+      id = preferredId && !usedIds.has(preferredId) ? preferredId : generateId();
+      usedIds.add(id);
+    }
+
+    const previousNode = nodes[id];
+    if (previousNode) {
+      nodeKeys.delete(createNodeKey(previousNode.type, previousNode.parentId, previousNode.name));
+      if (previousNode.parentId !== parentId) {
+        removeChildId(nodes, previousNode.parentId, id);
+      }
+    }
+
     nodes[id] = {
+      ...previousNode,
       id,
       name: trimmedName,
       type,
       parentId,
-      childIds: [],
+      childIds: previousNode?.childIds ?? [],
       ...(type === 'System' || type === 'Subsystem' || type === 'Component'
         ? {
-            asil: metadata?.asil || 'QM',
-            safetyGoal: metadata?.safetyGoal || '',
+            asil: metadata?.asil || previousNode?.asil || 'QM',
+            safetyGoal: metadata?.safetyGoal || previousNode?.safetyGoal || '',
           }
         : {}),
     };
 
     if (parentId) {
-      nodes[parentId].childIds.push(id);
+      appendChildId(nodes, parentId, id);
     }
 
     nodeKeys.set(key, id);
@@ -1163,13 +1403,13 @@ const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<str
   rows.forEach((row, index) => {
     let parentId: string | null = null;
     const hierarchy = [
-      { type: 'System' as const, name: row.system },
-      { type: 'Subsystem' as const, name: row.subsystem },
-      { type: 'Component' as const, name: row.component },
-      { type: 'Function' as const, name: row.functionName || 'Imported Function' },
+      { type: 'System' as const, name: row.system, preferredId: row.systemId },
+      { type: 'Subsystem' as const, name: row.subsystem, preferredId: row.subsystemId },
+      { type: 'Component' as const, name: row.component, preferredId: row.componentId },
+      { type: 'Function' as const, name: row.functionName || 'Imported Function', preferredId: row.functionId },
     ];
 
-    hierarchy.forEach(({ type, name }) => {
+    hierarchy.forEach(({ type, name, preferredId }) => {
       if (!name && type !== 'Function') return;
 
       const assignContextToThisNode =
@@ -1182,7 +1422,7 @@ const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<str
             asil: normalizeNodeAsil(row.asil),
             safetyGoal: row.safetyGoal || '',
           }
-        : undefined);
+        : undefined, preferredId);
 
       if (nextParentId) {
         parentId = nextParentId;
@@ -1193,8 +1433,38 @@ const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<str
       throw new Error(`Row ${index + 2} is missing the hierarchy required to attach failure mode "${row.failureMode}".`);
     }
 
-    const failureModeId = generateId();
+    const trimmedFailureModeName = row.failureMode.trim();
+    if (!trimmedFailureModeName) {
+      throw new Error(`Row ${index + 2} is missing a failure mode name.`);
+    }
+
+    const failureModeKey = createNodeKey('FailureMode', parentId, trimmedFailureModeName);
+    const preferredFailureModeId =
+      row.nodeId && !seenFailureModeRowIds.has(row.nodeId) ? row.nodeId : undefined;
+    if (row.nodeId) {
+      seenFailureModeRowIds.add(row.nodeId);
+    }
+
+    let failureModeId = preferredFailureModeId && nodes[preferredFailureModeId]
+      ? preferredFailureModeId
+      : nodeKeys.get(failureModeKey);
+    if (!failureModeId) {
+      failureModeId = preferredFailureModeId && !usedIds.has(preferredFailureModeId)
+        ? preferredFailureModeId
+        : generateId();
+      usedIds.add(failureModeId);
+    }
+
+    const previousFailureMode = nodes[failureModeId];
+    if (previousFailureMode) {
+      nodeKeys.delete(createNodeKey(previousFailureMode.type, previousFailureMode.parentId, previousFailureMode.name));
+      if (previousFailureMode.parentId !== parentId) {
+        removeChildId(nodes, previousFailureMode.parentId, failureModeId);
+      }
+    }
+
     nodes[failureModeId] = {
+      ...previousFailureMode,
       id: failureModeId,
       name: row.failureMode,
       type: 'FailureMode',
@@ -1206,10 +1476,11 @@ const buildNodesFromFailureModeRows = (rows: FailureModeImportRow[]): Record<str
       fitRate: row.fitRate,
       classification: row.classification,
     };
-    nodes[parentId].childIds.push(failureModeId);
+    appendChildId(nodes, parentId, failureModeId);
+    nodeKeys.set(failureModeKey, failureModeId);
   });
 
-  return nodes;
+  return finalizeImportedNodes(nodes);
 };
 
 const getWorksheetRecords = (worksheet: import('exceljs').Worksheet): WorksheetRecord[] => {
@@ -1263,64 +1534,105 @@ const parseNodeTypeLabel = (value: unknown): FmedaNodeType | null => {
   }
 };
 
-const parseHierarchyWorksheet = (worksheet: import('exceljs').Worksheet): Record<string, FmedaNode> => {
+const parseHierarchyRows = (worksheet: import('exceljs').Worksheet): HierarchyImportRow[] => {
   const rows = getWorksheetRecords(worksheet);
   if (rows.length === 0) {
     throw new Error('The Excel hierarchy sheet is empty.');
   }
 
-  const nodes: Record<string, FmedaNode> = {};
-  const levelStack = new Map<number, string>();
-
-  rows.forEach((row, index) => {
-    const nodeType = parseNodeTypeLabel(row['Node Type']);
-    const name = normalizeText(row.Name || row['Failure Mode']);
-    const level = parseNumericCell(row.Level);
-
+  return rows.map((row, index) => {
+    const nodeType = parseNodeTypeLabel(getRecordValue(row, ['Node Type']));
+    const name = normalizeText(getRecordValue(row, ['Name', 'Failure Mode']));
     if (!nodeType || !name) {
       throw new Error(`The Hierarchy sheet contains an invalid row at line ${index + 2}.`);
     }
 
-    const parentId = level > 0 ? levelStack.get(level - 1) || null : null;
-    if (level > 0 && !parentId) {
-      throw new Error(`The Hierarchy sheet row for "${name}" has an invalid nesting level.`);
-    }
+    return {
+      rowNumber: index + 2,
+      nodeId: normalizeOptionalId(getRecordValue(row, ['Node ID'])),
+      parentNodeId: normalizeOptionalId(getRecordValue(row, ['Parent Node ID'])),
+      level: parseNumericCell(getRecordValue(row, ['Level'])),
+      nodeType,
+      name,
+      system: normalizeText(getRecordValue(row, ['System'])),
+      subsystem: normalizeText(getRecordValue(row, ['Subsystem'])),
+      component: normalizeText(getRecordValue(row, ['Component'])),
+      functionName: normalizeText(getRecordValue(row, ['Function'])),
+      failureMode: normalizeText(getRecordValue(row, ['Failure Mode'])),
+      localEffect: normalizeText(getRecordValue(row, ['Local Effect'])),
+      safetyMechanism: normalizeText(getRecordValue(row, ['Safety Mechanism'])),
+      classification: normalizeClassification(getRecordValue(row, ['Classification'])),
+      diagnosticCoverage: parseNumericCell(getRecordValue(row, ['DC %', 'Diagnostic Coverage']), { allowPercent: true }),
+      fitRate: parseNumericCell(getRecordValue(row, ['FIT', 'FIT Rate'])),
+      asil: normalizeText(getRecordValue(row, ['ASIL'])),
+      safetyGoal: normalizeText(getRecordValue(row, ['Safety Goal'])),
+    };
+  });
+};
 
-    const id = generateId();
+const parseHierarchyWorksheet = (worksheet: import('exceljs').Worksheet): Record<string, FmedaNode> => {
+  const rows = parseHierarchyRows(worksheet);
+  const nodes: Record<string, FmedaNode> = {};
+  const rowIds: string[] = [];
+  const usedIds = new Set<string>();
+
+  rows.forEach((row) => {
+    const id = row.nodeId && !usedIds.has(row.nodeId) ? row.nodeId : generateId();
+    usedIds.add(id);
+    rowIds.push(id);
+
     const node: FmedaNode = {
       id,
-      name,
-      type: nodeType,
-      parentId,
+      name: row.name,
+      type: row.nodeType,
+      parentId: null,
       childIds: [],
     };
 
-    if (nodeType === 'FailureMode') {
-      node.localEffect = normalizeText(row['Local Effect']);
-      node.safetyMechanism = normalizeText(row['Safety Mechanism']);
-      node.classification = normalizeClassification(row.Classification);
-      node.diagnosticCoverage = parseNumericCell(row['DC %'], { allowPercent: true });
-      node.fitRate = parseNumericCell(row.FIT);
+    if (row.nodeType === 'FailureMode') {
+      node.localEffect = row.localEffect;
+      node.safetyMechanism = row.safetyMechanism;
+      node.classification = row.classification;
+      node.diagnosticCoverage = row.diagnosticCoverage;
+      node.fitRate = row.fitRate;
     }
 
-    if (nodeType === 'System' || nodeType === 'Subsystem' || nodeType === 'Component') {
-      node.asil = normalizeNodeAsil(row.ASIL);
-      node.safetyGoal = normalizeText(row['Safety Goal']);
+    if (row.nodeType === 'System' || row.nodeType === 'Subsystem' || row.nodeType === 'Component') {
+      node.asil = normalizeNodeAsil(row.asil);
+      node.safetyGoal = row.safetyGoal;
     }
 
     nodes[id] = node;
+  });
 
-    if (parentId) {
-      nodes[parentId].childIds.push(id);
+  const levelStack = new Map<number, string>();
+
+  rows.forEach((row, index) => {
+    const id = rowIds[index];
+    let parentId: string | null = null;
+
+    if (row.parentNodeId && nodes[row.parentNodeId] && row.parentNodeId !== id) {
+      parentId = row.parentNodeId;
+    } else if (row.level > 0) {
+      parentId = levelStack.get(row.level - 1) || null;
+      if (!parentId) {
+        throw new Error(`The Hierarchy sheet row for "${row.name}" has an invalid nesting level.`);
+      }
     }
 
-    levelStack.set(level, id);
+    nodes[id] = {
+      ...nodes[id],
+      parentId,
+    };
+
+    appendChildId(nodes, parentId, id);
+    levelStack.set(row.level, id);
     Array.from(levelStack.keys())
-      .filter((stackLevel) => stackLevel > level)
+      .filter((stackLevel) => stackLevel > row.level)
       .forEach((stackLevel) => levelStack.delete(stackLevel));
   });
 
-  return nodes;
+  return finalizeImportedNodes(nodes);
 };
 
 const parseFailureModeWorksheet = (worksheet: import('exceljs').Worksheet): FailureModeImportRow[] => {
@@ -1332,31 +1644,67 @@ const parseFailureModeWorksheet = (worksheet: import('exceljs').Worksheet): Fail
 
   return rows
     .map((row) => ({
-      system: normalizeText(row.System),
-      subsystem: normalizeText(row.Subsystem),
-      component: normalizeText(row.Component),
-      functionName: normalizeText(row.Function),
-      failureMode: normalizeText(row['Failure Mode']),
-      localEffect: normalizeText(row['Local Effect']),
-      safetyMechanism: normalizeText(row['Safety Mechanism']),
-      classification: normalizeClassification(row.Classification),
-      diagnosticCoverage: parseNumericCell(row['Diagnostic Coverage'], { allowPercent: true }),
-      fitRate: parseNumericCell(row['FIT Rate']),
-      asil: normalizeText(row.ASIL),
-      safetyGoal: normalizeText(row['Safety Goal']),
-      path: normalizeText(row.Path),
+      nodeId: normalizeOptionalId(getRecordValue(row, ['Failure Mode ID', 'Node ID'])),
+      parentNodeId: normalizeOptionalId(getRecordValue(row, ['Parent Function ID', 'Parent Node ID'])),
+      systemId: normalizeOptionalId(getRecordValue(row, ['System ID'])),
+      subsystemId: normalizeOptionalId(getRecordValue(row, ['Subsystem ID'])),
+      componentId: normalizeOptionalId(getRecordValue(row, ['Component ID'])),
+      functionId: normalizeOptionalId(getRecordValue(row, ['Function ID'])),
+      system: normalizeText(getRecordValue(row, ['System'])),
+      subsystem: normalizeText(getRecordValue(row, ['Subsystem'])),
+      component: normalizeText(getRecordValue(row, ['Component'])),
+      functionName: normalizeText(getRecordValue(row, ['Function'])),
+      failureMode: normalizeText(getRecordValue(row, ['Failure Mode'])),
+      localEffect: normalizeText(getRecordValue(row, ['Local Effect'])),
+      safetyMechanism: normalizeText(getRecordValue(row, ['Safety Mechanism'])),
+      classification: normalizeClassification(getRecordValue(row, ['Classification'])),
+      diagnosticCoverage: parseNumericCell(getRecordValue(row, ['Diagnostic Coverage', 'Diagnostic Coverage %']), { allowPercent: true }),
+      fitRate: parseNumericCell(getRecordValue(row, ['FIT Rate'])),
+      asil: normalizeText(getRecordValue(row, ['ASIL'])),
+      safetyGoal: normalizeText(getRecordValue(row, ['Safety Goal'])),
+      path: normalizeText(getRecordValue(row, ['Path'])),
     }))
     .filter((row) => row.failureMode);
+};
+
+const parseProjectDocumentsWorksheet = (worksheet: import('exceljs').Worksheet | undefined): ProjectDocument[] => {
+  if (!worksheet) return [];
+
+  return normalizeProjectDocuments(
+    getWorksheetRecords(worksheet).map((row) => ({
+      id: normalizeText(getRecordValue(row, ['Document ID'])),
+      kind: normalizeText(getRecordValue(row, ['Kind'])) === 'notes' ? 'notes' : 'uploaded',
+      name: normalizeText(getRecordValue(row, ['Name'])),
+      uploadedAt: normalizeText(getRecordValue(row, ['Uploaded At'])),
+      extractedText: normalizeText(getRecordValue(row, ['Extracted Text'])),
+    }))
+  );
+};
+
+const findWorksheetValueByLabel = (worksheet: import('exceljs').Worksheet, label: string): string => {
+  const normalizedLabel = normalizeHeader(label);
+
+  for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+    const row = worksheet.getRow(rowNumber);
+    for (let columnNumber = 1; columnNumber <= row.cellCount; columnNumber += 1) {
+      const currentLabel = normalizeText(row.getCell(columnNumber).value);
+      if (normalizeHeader(currentLabel) === normalizedLabel) {
+        return normalizeText(row.getCell(columnNumber + 1).value);
+      }
+    }
+  }
+
+  return '';
 };
 
 const parseOverviewContext = (worksheet: import('exceljs').Worksheet | undefined): ProjectContext | null => {
   if (!worksheet) return null;
 
   return normalizeProjectContext({
-    projectName: normalizeProjectContextValue(normalizeText(worksheet.getCell('B10').value)),
-    safetyStandard: normalizeProjectContextValue(normalizeText(worksheet.getCell('B11').value)),
-    targetAsil: normalizeProjectContextValue(normalizeText(worksheet.getCell('B12').value)),
-    safetyGoal: normalizeProjectContextValue(normalizeText(worksheet.getCell('B13').value)),
+    projectName: normalizeProjectContextValue(findWorksheetValueByLabel(worksheet, 'Project Name')),
+    safetyStandard: normalizeProjectContextValue(findWorksheetValueByLabel(worksheet, 'Safety Standard')),
+    targetAsil: normalizeProjectContextValue(findWorksheetValueByLabel(worksheet, 'Target ASIL')),
+    safetyGoal: normalizeProjectContextValue(findWorksheetValueByLabel(worksheet, 'Safety Goal')),
   });
 };
 
@@ -1370,44 +1718,57 @@ const readExcelFile = async (file: File): Promise<ImportResult> => {
     throw new Error('Failed to read the Excel workbook. Please choose a valid .xlsx export from FMEDA Pro.');
   }
 
-  const hierarchySheet = workbook.getWorksheet('Hierarchy');
-  const failureModesSheet = workbook.getWorksheet('Failure Modes');
-  const overviewSheet = workbook.getWorksheet('Overview');
-  const projectContext = parseOverviewContext(overviewSheet) || {
+  const hierarchySheet = workbook.getWorksheet(HIERARCHY_SHEET_NAME);
+  const failureModesSheet = workbook.getWorksheet(FAILURE_MODES_SHEET_NAME);
+  const documentsSheet = workbook.getWorksheet(DOCUMENTS_SHEET_NAME);
+  const overviewSheet = workbook.getWorksheet(OVERVIEW_SHEET_NAME);
+  const projectDocuments = parseProjectDocumentsWorksheet(documentsSheet);
+  const projectContext = normalizeProjectContext({
+    ...(parseOverviewContext(overviewSheet) ?? {
+      projectName: deriveProjectNameFromFileName(file.name),
+    }),
+    ...(projectDocuments.length > 0 ? { documents: projectDocuments } : {}),
+  }) || {
     projectName: deriveProjectNameFromFileName(file.name),
   };
 
-  let failureModesError: Error | null = null;
-  if (failureModesSheet) {
-    try {
-      const failureModeRows = parseFailureModeWorksheet(failureModesSheet);
-      return {
-        nodes: buildNodesFromFailureModeRows(failureModeRows),
-        projectContext,
-      };
-    } catch (error) {
-      failureModesError = error instanceof Error ? error : new Error('Failed to parse the Excel failure mode sheet.');
-    }
-  }
-
   let hierarchyError: Error | null = null;
+  let nodesFromHierarchy: Record<string, FmedaNode> | null = null;
   if (hierarchySheet) {
     try {
-      const nodes = parseHierarchyWorksheet(hierarchySheet);
-      return { nodes, projectContext };
+      nodesFromHierarchy = parseHierarchyWorksheet(hierarchySheet);
     } catch (error) {
       hierarchyError = error instanceof Error ? error : new Error('Failed to parse the Excel hierarchy sheet.');
     }
   }
 
+  let failureModesError: Error | null = null;
+  let nodesFromFailureModes: Record<string, FmedaNode> | null = null;
+  if (failureModesSheet) {
+    try {
+      const failureModeRows = parseFailureModeWorksheet(failureModesSheet);
+      nodesFromFailureModes = buildNodesFromFailureModeRows(failureModeRows, nodesFromHierarchy ?? {});
+    } catch (error) {
+      failureModesError = error instanceof Error ? error : new Error('Failed to parse the Excel failure mode sheet.');
+    }
+  }
+
+  if (nodesFromFailureModes) {
+    return { nodes: nodesFromFailureModes, projectContext };
+  }
+
+  if (nodesFromHierarchy) {
+    return { nodes: nodesFromHierarchy, projectContext };
+  }
+
   if (failureModesError || hierarchyError) {
-    const details = [failureModesError?.message, hierarchyError?.message]
+    const details = [hierarchyError?.message, failureModesError?.message]
       .filter(Boolean)
       .join(' ');
     throw new Error(`This Excel file could not be imported. ${details}`.trim());
   }
 
-  throw new Error('This Excel file is not a supported FMEDA export. Expected a "Hierarchy" or "Failure Modes" worksheet.');
+  throw new Error(`This Excel file is not a supported FMEDA export. Expected a "${HIERARCHY_SHEET_NAME}" or "${FAILURE_MODES_SHEET_NAME}" worksheet.`);
 };
 
 const readCsvFile = async (file: File): Promise<ImportResult> => {
