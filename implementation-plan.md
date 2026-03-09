@@ -22,6 +22,7 @@ Turn the current FMEDA app from a solid demo/workbench into a scalable engineeri
 - The app shell now lazy-loads heavy view modules and the export pipeline, and Vite manual chunking keeps the initial bundle focused on the active screen.
 - The analysis grid now supports TanStack-powered column sorting and scoped search filtering while preserving hierarchy navigation context.
 - The analysis grid now supports multi-row selection with visible selection state and select-all behavior within the current hierarchy/filter scope.
+- The analysis grid now supports bulk updates across selected failure modes for classification, FIT, and diagnostic coverage.
 - Verified on March 9, 2026:
   - `./node_modules/.bin/vitest.exe run src/utils/calculations.test.ts src/store/fmedaStore.test.ts` passes with 2 test files and 5 tests passing.
   - `./node_modules/.bin/tsc.exe -p tsconfig.app.json --noEmit` passes.
@@ -155,14 +156,14 @@ This is the highest-value product improvement for day-to-day engineering use onc
 - [x] Add TanStack sorting and filtering models.
 - [x] Add sticky/pinned hierarchy columns.
 - [x] Add multi-row selection.
-- Implement bulk updates for classification, FIT, and diagnostic coverage.
+- [x] Implement bulk updates for classification, FIT, and diagnostic coverage.
 - Support Excel-style paste for tabular data into failure mode rows.
 - Add simple saved filters/views in local storage.
 
 ### Acceptance Criteria
 
 - Users can sort and filter without losing hierarchy context.
-- Users can apply one edit to multiple selected rows.
+- [x] Users can apply one edit to multiple selected rows.
 - Users can paste a rectangular selection from Excel into the grid for supported columns.
 - Core editing flows are usable without repeated popover-heavy interactions.
 

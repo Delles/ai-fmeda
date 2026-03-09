@@ -141,6 +141,34 @@ describe('fmedaStore targeted recalculation', () => {
     expect(afterNodes['sub-2'].dangerousFit).toBeCloseTo(120);
     expect(afterNodes['sys-1'].totalFit).toBeCloseTo(170);
   });
+
+  it('updates multiple selected failure modes and only recomputes affected ancestors', () => {
+    useFmedaStore.getState().setNodes(sampleNodes);
+    const beforeNodes = useFmedaStore.getState().nodes;
+
+    useFmedaStore.getState().updateNodes(['fm-1', 'fm-2'], {
+      classification: 'Dangerous',
+      diagnosticCoverage: 0.5,
+    });
+    const afterNodes = useFmedaStore.getState().nodes;
+
+    expect(afterNodes['fm-1']).not.toBe(beforeNodes['fm-1']);
+    expect(afterNodes['fm-2']).not.toBe(beforeNodes['fm-2']);
+    expect(afterNodes['func-1']).not.toBe(beforeNodes['func-1']);
+    expect(afterNodes['comp-1']).not.toBe(beforeNodes['comp-1']);
+    expect(afterNodes['sub-1']).not.toBe(beforeNodes['sub-1']);
+    expect(afterNodes['sys-1']).not.toBe(beforeNodes['sys-1']);
+
+    expect(afterNodes['sub-2']).toBe(beforeNodes['sub-2']);
+    expect(afterNodes['comp-2']).toBe(beforeNodes['comp-2']);
+    expect(afterNodes['func-2']).toBe(beforeNodes['func-2']);
+    expect(afterNodes['fm-3']).toBe(beforeNodes['fm-3']);
+
+    expect(afterNodes['fm-1'].diagnosticCoverage).toBeCloseTo(0.5);
+    expect(afterNodes['fm-2'].classification).toBe('Dangerous');
+    expect(afterNodes['func-1'].dangerousFit).toBeCloseTo(150);
+    expect(afterNodes['func-1'].avgDc).toBeCloseTo((100 * 0.5 + 50 * 0.5) / 150);
+  });
 });
 
 describe('selectProjectDocuments', () => {

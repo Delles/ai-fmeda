@@ -43,6 +43,9 @@ export interface FmedaState {
   /** Updates an existing node's properties */
   updateNode: (id: string, updates: Partial<FmedaNode>) => void;
 
+  /** Updates multiple existing nodes with the same properties */
+  updateNodes: (ids: string[], updates: Partial<FmedaNode>) => void;
+
   /** Deletes a node and all its descendants */
   deleteNode: (id: string) => void;
 
@@ -219,6 +222,26 @@ export const useFmedaStore = create<FmedaState>()(
               };
 
               return { nodes: recalculateAffectedTotals(newNodes, [id]) };
+            }
+          )
+        ),
+
+      updateNodes: (ids, updates) =>
+        set((state) =>
+          profileStoreMutation(
+            'updateNodes',
+            { nodeIds: ids, updatedFields: Object.keys(updates) },
+            () => {
+              const validIds = Array.from(new Set(ids)).filter((id) => Boolean(state.nodes[id]));
+              if (validIds.length === 0) return state;
+
+              const newNodes = { ...state.nodes };
+
+              validIds.forEach((id) => {
+                newNodes[id] = { ...newNodes[id], ...updates };
+              });
+
+              return { nodes: recalculateAffectedTotals(newNodes, validIds) };
             }
           )
         ),

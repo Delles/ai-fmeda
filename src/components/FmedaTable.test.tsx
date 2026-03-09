@@ -97,22 +97,31 @@ describe('FmedaTable multi-row selection', () => {
     });
   });
 
-  it('supports multi-selecting visible rows with checkboxes', () => {
+  it('reveals the bulk action after manually selecting a failure mode row', () => {
     render(<FmedaTable />);
 
     const firstRow = screen.getByRole('checkbox', { name: /select row no output/i }) as HTMLInputElement;
-    const secondRow = screen.getByRole('checkbox', { name: /select row degraded output/i }) as HTMLInputElement;
-    const thirdRow = screen.getByRole('checkbox', { name: /select row intermittent output/i }) as HTMLInputElement;
 
     fireEvent.click(firstRow);
 
     expect(firstRow).toBeChecked();
+    expect(screen.getByRole('button', { name: /bulk edit selected/i })).toBeInTheDocument();
+  });
 
-    fireEvent.click(thirdRow);
+  it('shows selection checkboxes only for failure mode rows', () => {
+    act(() => {
+      useFmedaStore.setState({
+        nodes: sampleNodes,
+        projectContext: null,
+        selectedId: 'sys-1',
+      });
+    });
 
-    expect(screen.getByRole('checkbox', { name: /select row no output/i })).toBeChecked();
-    expect(secondRow).not.toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /select row intermittent output/i })).toBeChecked();
+    render(<FmedaTable />);
+
+    expect(screen.queryByRole('checkbox', { name: /select row brake controller/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /select row mcu/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /select row process braking command/i })).not.toBeInTheDocument();
   });
 
   it('selects and clears all visible rows from the header controls', () => {
@@ -130,4 +139,39 @@ describe('FmedaTable multi-row selection', () => {
     expect(screen.getByRole('checkbox', { name: /select row degraded output/i })).not.toBeChecked();
     expect(screen.getByRole('checkbox', { name: /select row intermittent output/i })).not.toBeChecked();
   }, 10000);
+
+  it('applies bulk classification and metrics updates to selected failure modes', () => {
+    render(<FmedaTable />);
+
+    fireEvent.click(screen.getByRole('button', { name: /select all visible/i }));
+
+    expect(screen.getByText(/bulk edit selected failure modes/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('combobox'), {
+      target: { value: 'Safe' },
+    });
+    const [bulkDiagnosticCoverageInput, bulkFitRateInput] = screen.getAllByRole('spinbutton');
+
+    fireEvent.change(bulkDiagnosticCoverageInput, {
+      target: { value: '75' },
+    });
+    fireEvent.change(bulkFitRateInput, {
+      target: { value: '12.5' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /apply to selection/i }));
+
+    const nodes = useFmedaStore.getState().nodes;
+
+    expect(nodes['fm-1'].classification).toBe('Safe');
+    expect(nodes['fm-2'].classification).toBe('Safe');
+    expect(nodes['fm-3'].classification).toBe('Safe');
+    expect(nodes['fm-1'].diagnosticCoverage).toBeCloseTo(0.75);
+    expect(nodes['fm-2'].diagnosticCoverage).toBeCloseTo(0.75);
+    expect(nodes['fm-3'].diagnosticCoverage).toBeCloseTo(0.75);
+    expect(nodes['fm-1'].fitRate).toBeCloseTo(12.5);
+    expect(nodes['fm-2'].fitRate).toBeCloseTo(12.5);
+    expect(nodes['fm-3'].fitRate).toBeCloseTo(12.5);
+    expect(screen.getByText(/applied to 3 failure modes\./i)).toBeInTheDocument();
+  });
 });

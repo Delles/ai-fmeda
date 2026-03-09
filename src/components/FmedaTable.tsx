@@ -197,6 +197,7 @@ export const FmedaTable: React.FC = () => {
   const nodes = useFmedaStore(selectVisibleNodes);
   const selectedId = useFmedaStore((state) => state.selectedId);
   const updateNode = useFmedaStore((state) => state.updateNode);
+  const updateNodes = useFmedaStore((state) => state.updateNodes);
   const deleteNode = useFmedaStore((state) => state.deleteNode);
   const addNode = useFmedaStore((state) => state.addNode);
   const setSelectedId = useFmedaStore((state) => state.setSelectedId);
@@ -239,9 +240,16 @@ export const FmedaTable: React.FC = () => {
   const [expanded, setExpanded] = useState<ExpandedState>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
+  const [bulkClassification, setBulkClassification] = useState<'' | 'Safe' | 'Dangerous'>('');
+  const [bulkDiagnosticCoverage, setBulkDiagnosticCoverage] = useState('');
+  const [bulkFitRate, setBulkFitRate] = useState('');
+  const [bulkUpdateMessage, setBulkUpdateMessage] = useState<string | null>(null);
   const selectableRowIdsRef = useRef<string[]>([]);
   const lastSelectedRowIdRef = useRef<string | null>(null);
   const pendingCheckboxRangeRef = useRef(false);
+  const bulkEditorRef = useRef<HTMLFormElement>(null);
+  const bulkClassificationRef = useRef<HTMLSelectElement>(null);
+  const previousSelectedFailureModeCountRef = useRef(0);
   const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
 
   const handleDelete = useCallback(async (row: Row<FmedaNode>) => {
@@ -685,24 +693,27 @@ export const FmedaTable: React.FC = () => {
               className="flex items-center gap-2"
               style={{ paddingLeft: `${row.depth * 1.25}rem` }}
             >
-              <input
-                type="checkbox"
-                checked={isSelected}
-                onMouseDown={(event) => {
-                  pendingCheckboxRangeRef.current = event.shiftKey;
-                }}
-                onChange={(event) => {
-                  const mode = pendingCheckboxRangeRef.current && lastSelectedRowIdRef.current ? 'range' : 'toggle';
-                  pendingCheckboxRangeRef.current = false;
-                  toggleRowSelection(row.original.id, {
-                    mode,
-                    shouldSelect: event.target.checked,
-                  });
-                }}
-                onClickCapture={(event) => event.stopPropagation()}
-                aria-label={`Select row ${row.original.name}`}
-                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-              />
+              {isFailureMode ? (
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onMouseDown={(event) => {
+                    pendingCheckboxRangeRef.current = event.shiftKey;
+                  }}
+                  onChange={(event) => {
+                    const mode = pendingCheckboxRangeRef.current && lastSelectedRowIdRef.current ? 'range' : 'toggle';
+                    pendingCheckboxRangeRef.current = false;
+                    toggleRowSelection(row.original.id, {
+                      mode,
+                      shouldSelect: event.target.checked,
+                    });
+                  }}
+                  aria-label={`Select row ${row.original.name}`}
+                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+              ) : (
+                <span className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+              )}
               {row.getCanExpand() ? (
                 <button
                   onClick={(e) => {
@@ -1052,16 +1063,26 @@ export const FmedaTable: React.FC = () => {
 
   const allRows = table.getRowModel().rows;
   const selectableRowIds = useMemo(
-    () => allRows.filter((row) => !row.original.id.startsWith('placeholder-')).map((row) => row.original.id),
+    () =>
+      allRows
+        .filter((row) => !row.original.id.startsWith('placeholder-') && row.original.type === 'FailureMode')
+        .map((row) => row.original.id),
     [allRows]
   );
   const selectedRows = useMemo(
     () => allRows.filter((row) => selectedRowIdSet.has(row.original.id)),
     [allRows, selectedRowIdSet]
   );
-  const selectedFailureModeCount = useMemo(
-    () => selectedRows.filter((row) => row.original.type === 'FailureMode').length,
+  const selectedFailureModeIds = useMemo(
+    () =>
+      selectedRows
+        .filter((row) => row.original.type === 'FailureMode')
+        .map((row) => row.original.id),
     [selectedRows]
+  );
+  const selectedFailureModeCount = useMemo(
+    () => selectedFailureModeIds.length,
+    [selectedFailureModeIds]
   );
   const allVisibleRowsSelected =
     selectableRowIds.length > 0 && selectedRowIds.length === selectableRowIds.length;
@@ -1094,6 +1115,75 @@ export const FmedaTable: React.FC = () => {
       lastSelectedRowIdRef.current = null;
     }
   }, [selectableRowIds]);
+
+  useEffect(() => {
+    if (!bulkUpdateMessage) return;
+
+    const timer = window.setTimeout(() => setBulkUpdateMessage(null), 2500);
+    return () => window.clearTimeout(timer);
+  }, [bulkUpdateMessage]);
+
+  const hasPendingBulkUpdates =
+    bulkClassification !== '' || bulkDiagnosticCoverage.trim() !== '' || bulkFitRate.trim() !== '';
+
+  const openBulkEditor = useCallback(() => {
+    bulkEditorRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+    requestAnimationFrame(() => {
+      bulkClassificationRef.current?.focus();
+    });
+  }, []);
+
+  useEffect(() => {
+    const previousCount = previousSelectedFailureModeCountRef.current;
+
+    if (previousCount === 0 && selectedFailureModeCount > 0) {
+      openBulkEditor();
+    }
+
+    previousSelectedFailureModeCountRef.current = selectedFailureModeCount;
+  }, [openBulkEditor, selectedFailureModeCount]);
+
+  const handleApplyBulkUpdates = useCallback(() => {
+    if (selectedFailureModeIds.length === 0) {
+      return;
+    }
+
+    const updates: Partial<FmedaNode> = {};
+
+    if (bulkClassification !== '') {
+      updates.classification = bulkClassification;
+    }
+
+    if (bulkDiagnosticCoverage.trim() !== '') {
+      const parsedDc = Number.parseFloat(bulkDiagnosticCoverage);
+      if (!Number.isNaN(parsedDc)) {
+        updates.diagnosticCoverage = Math.min(100, Math.max(0, parsedDc)) / 100;
+      }
+    }
+
+    if (bulkFitRate.trim() !== '') {
+      const parsedFit = Number.parseFloat(bulkFitRate);
+      if (!Number.isNaN(parsedFit)) {
+        updates.fitRate = Math.max(0, parsedFit);
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return;
+    }
+
+    updateNodes(selectedFailureModeIds, updates);
+    setBulkClassification('');
+    setBulkDiagnosticCoverage('');
+    setBulkFitRate('');
+    setBulkUpdateMessage(`Applied to ${selectedFailureModeIds.length} failure mode${selectedFailureModeIds.length === 1 ? '' : 's'}.`);
+  }, [
+    bulkClassification,
+    bulkDiagnosticCoverage,
+    bulkFitRate,
+    selectedFailureModeIds,
+    updateNodes,
+  ]);
 
   useDevRenderProfile('FmedaTable', {
     selectedId: selectedId ?? 'all',
@@ -1536,6 +1626,15 @@ export const FmedaTable: React.FC = () => {
                   {selectedFailureModeCount} failure mode{selectedFailureModeCount === 1 ? '' : 's'} selected
                 </span>
               )}
+              {selectedFailureModeCount > 0 && (
+                <button
+                  type="button"
+                  onClick={openBulkEditor}
+                  className="rounded-full bg-blue-600 px-2.5 py-1 font-medium text-white transition-colors hover:bg-blue-700"
+                >
+                  Bulk edit selected
+                </button>
+              )}
               {hasActiveFilter && (
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 font-medium text-blue-700">
                   Filtered from current hierarchy scope
@@ -1570,10 +1669,111 @@ export const FmedaTable: React.FC = () => {
                 </button>
               )}
               <span className="text-gray-400">
-                Use row checkboxes to build a selection in the current view
+                Use failure mode checkboxes to build a selection in the current view
               </span>
             </div>
           </div>
+
+          {selectedFailureModeCount > 0 && (
+            <form
+              ref={bulkEditorRef}
+              className="flex flex-wrap items-end gap-3 rounded-xl border border-blue-200 bg-gradient-to-r from-blue-50 via-white to-indigo-50 px-4 py-3 shadow-sm"
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleApplyBulkUpdates();
+              }}
+            >
+              <div className="min-w-[14rem] flex-1">
+                <div className="text-sm font-semibold text-gray-900">
+                  Bulk edit selected failure modes
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  <span>
+                    Applying changes to {selectedFailureModeCount} selected failure mode{selectedFailureModeCount === 1 ? '' : 's'}.
+                  </span>
+                  {bulkUpdateMessage && (
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700">
+                      {bulkUpdateMessage}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <label className="flex min-w-[10rem] flex-col gap-1 text-xs font-medium text-gray-600">
+                Classification
+                <select
+                  ref={bulkClassificationRef}
+                  aria-label="Bulk classification"
+                  value={bulkClassification}
+                  onChange={(event) => setBulkClassification(event.target.value as '' | 'Safe' | 'Dangerous')}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="">No change</option>
+                  <option value="Safe">Safe</option>
+                  <option value="Dangerous">Dangerous</option>
+                </select>
+              </label>
+
+              <label className="flex min-w-[9rem] flex-col gap-1 text-xs font-medium text-gray-600">
+                DC (%)
+                <input
+                  aria-label="Bulk diagnostic coverage"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={100}
+                  step={0.1}
+                  value={bulkDiagnosticCoverage}
+                  onChange={(event) => setBulkDiagnosticCoverage(event.target.value)}
+                  placeholder="No change"
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </label>
+
+              <label className="flex min-w-[9rem] flex-col gap-1 text-xs font-medium text-gray-600">
+                FIT rate
+                <input
+                  aria-label="Bulk FIT rate"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.1}
+                  value={bulkFitRate}
+                  onChange={(event) => setBulkFitRate(event.target.value)}
+                  placeholder="No change"
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </label>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={!hasPendingBulkUpdates}
+                  className={cn(
+                    'rounded-lg px-3.5 py-2 text-sm font-semibold shadow-sm transition-all',
+                    hasPendingBulkUpdates
+                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'bg-blue-100 text-blue-300 cursor-not-allowed',
+                  )}
+                >
+                  Apply to selection
+                </button>
+                {hasPendingBulkUpdates && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkClassification('');
+                      setBulkDiagnosticCoverage('');
+                      setBulkFitRate('');
+                    }}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    Reset
+                  </button>
+                )}
+              </div>
+            </form>
+          )}
 
           <div
             ref={scrollContainerRef}
