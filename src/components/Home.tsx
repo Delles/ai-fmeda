@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FilePlus, Upload, FolderOpen, Zap, CheckCircle2, ShieldCheck, Activity, Target, Clock3 } from 'lucide-react';
+import { FilePlus, Upload, FolderOpen, Zap, ShieldCheck, Activity, Target, Clock3 } from 'lucide-react';
 import { selectHomeSummary, useFmedaStore } from '../store/fmedaStore';
 import { importProjectFile } from '../utils/export';
 import { useConfirm } from '../hooks/useConfirm';
@@ -69,9 +69,12 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[70vh] text-center max-w-5xl mx-auto py-12">
-      <h2 className="text-3xl md:text-4xl font-extrabold text-gray-900 mb-10 tracking-tight">
-        FMEDA AI Analysis <span className="text-blue-600">Demo</span>
-      </h2>
+      <div className="mb-10 text-center">
+        <h2 className="text-3xl font-bold text-slate-800 tracking-tight">
+          FMEDA Workspace
+        </h2>
+        <p className="text-slate-500 mt-2">Functional Safety Analysis</p>
+      </div>
 
       {hasProject && (
         <div className="w-full mb-10 text-left">
@@ -172,48 +175,38 @@ export const Home: React.FC<HomeProps> = ({ onNewProject, onImportSuccess }) => 
         </div>
       )}
 
-      <div className="w-full text-left mb-3 ml-2">
-        <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Start Fresh</h3>
+      <div className="w-full text-left mb-3 ml-2 mt-4">
+        <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">New Analysis</h3>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
         <button
           onClick={onNewProject}
-          className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-blue-500 transition-all group"
+          className="flex flex-col text-left p-6 bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md hover:border-blue-400 transition-all group"
         >
-          <div className="flex items-center mb-5">
-            <div className="w-14 h-14 bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform mr-4 border border-blue-100">
-              <FilePlus size={28} />
+          <div className="flex items-center mb-3">
+            <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform mr-4 border border-blue-100">
+              <FilePlus size={24} />
             </div>
-            <h3 className="text-xl font-bold text-gray-900">Start New Project</h3>
+            <h3 className="text-lg font-bold text-gray-800">Create New Project</h3>
           </div>
-          <p className="text-gray-600 mb-6 flex-grow leading-relaxed">
-            Use the step-by-step AI wizard to structure components and functional safety architectures from concepts or plain text requirements.
+          <p className="text-slate-600 text-sm leading-relaxed">
+            Start a new FMEDA project using the setup wizard. You can begin from scratch or use AI to parse preliminary requirements.
           </p>
-          <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> AI-guided setup</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Context-aware hierarchy</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Automatic local draft saving</li>
-          </ul>
         </button>
 
         <button
           onClick={handleImportClick}
-          className="flex flex-col text-left p-8 bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md hover:border-emerald-500 transition-all group"
+          className="flex flex-col text-left p-6 bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md hover:border-emerald-400 transition-all group"
         >
-          <div className="flex items-center mb-5">
-            <div className="w-14 h-14 bg-gradient-to-br from-emerald-50 to-teal-50 text-emerald-600 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform mr-4 border border-emerald-100">
-              <Upload size={28} />
+          <div className="flex items-center mb-3">
+            <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-lg flex items-center justify-center group-hover:scale-105 transition-transform mr-4 border border-emerald-100">
+              <Upload size={24} />
             </div>
-            <h3 className="text-xl font-bold text-gray-900">Import Existing File</h3>
+            <h3 className="text-lg font-bold text-gray-800">Import Existing Project</h3>
           </div>
-          <p className="text-gray-600 mb-6 flex-grow leading-relaxed">
-            Load a previously exported FMEDA project JSON, CSV, or Excel file to continue your analysis with inline editing and safety metrics.
+          <p className="text-slate-600 text-sm leading-relaxed">
+            Load an existing FMEDA from a JSON, CSV, or Excel file to continue your analysis.
           </p>
-          <ul className="space-y-3 text-sm font-medium text-slate-600 bg-slate-50 p-4 rounded-xl">
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Supports FMEDA JSON, CSV, and Excel exports</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Keeps legacy JSON import compatibility</li>
-            <li className="flex items-center"><CheckCircle2 className="w-4 h-4 text-emerald-500 mr-2.5" /> Shows clear errors for unsupported files</li>
-          </ul>
           <input
             type="file"
             ref={fileInputRef}
