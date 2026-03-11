@@ -1210,7 +1210,7 @@ export const FmedaTable: React.FC = () => {
     enableColumnPinning: true,
     enableColumnResizing: true,
     enableMultiRowSelection: true,
-    enableRowSelection: (row) => row.original.type === 'FailureMode' && !row.original.isPlaceholder,
+    enableRowSelection: (row) => row.original.type === 'FailureMode' && !row.id.startsWith('placeholder-'),
     columnResizeMode: 'onChange',
     defaultColumn: {
       minSize: 96,
