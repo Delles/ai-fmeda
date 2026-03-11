@@ -44,6 +44,8 @@ lint_output.txt
 
 # Assistant folders
 .gemini/
+.agents/
+skills-lock.json
 
 # Development / Planning docs (Not needed for deployment)
 review.md

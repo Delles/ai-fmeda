@@ -1,8 +1,15 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import {
+  type Column,
+  type ColumnFiltersState,
+  type ColumnPinningState,
+  type RowSelectionState,
+  type VisibilityState,
   createColumnHelper,
   flexRender,
   getCoreRowModel,
+  getFacetedRowModel,
+  getFacetedUniqueValues,
   getFilteredRowModel,
   getExpandedRowModel,
   getSortedRowModel,
@@ -28,6 +35,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  Columns3,
   Search,
   X,
 } from 'lucide-react';
@@ -50,6 +58,7 @@ import { formatAIError } from '../lib/errorUtils';
 import { generateId } from '../utils/id';
 import { cn } from '../lib/utils';
 import { AILoadingIndicator } from './ui/AILoadingIndicator';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { useDevRenderProfile } from '../hooks/useDevRenderProfile';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
 
@@ -156,7 +165,26 @@ const getNextNodeType = (currentType: FmedaNodeType): FmedaNodeType | null => {
 const TABLE_ROW_ESTIMATE = 56;
 const PINNED_HIERARCHY_COLUMN_ID = 'name';
 const TABLE_MIN_WIDTH_CLASS = 'min-w-[88rem]';
-const PINNED_COLUMN_SHADOW_CLASS = 'shadow-[6px_0_12px_-10px_rgba(15,23,42,0.28)]';
+const LEFT_PINNED_COLUMN_SHADOW_CLASS = 'shadow-[6px_0_12px_-10px_rgba(15,23,42,0.28)]';
+const RIGHT_PINNED_COLUMN_SHADOW_CLASS = 'shadow-[-6px_0_12px_-10px_rgba(15,23,42,0.28)]';
+const DEFAULT_COLUMN_VISIBILITY: VisibilityState = {
+  type: false,
+  classification: false,
+};
+const DEFAULT_COLUMN_PINNING: ColumnPinningState = {
+  left: [PINNED_HIERARCHY_COLUMN_ID],
+  right: ['actions'],
+};
+const COLUMN_LABELS: Record<string, string> = {
+  name: 'Hierarchy / Name',
+  type: 'Type',
+  classification: 'Classification',
+  localEffect: 'Local Effect',
+  safetyMechanism: 'Safety Mechanism',
+  diagnosticCoverage: 'DC (%)',
+  fitRate: 'FIT Rate',
+  actions: 'Actions',
+};
 
 const getNodeSearchText = (node: TableRowData): string => {
   const diagnosticCoverage =
@@ -193,6 +221,41 @@ const globalTableFilter: FilterFn<TableRowData> = (row, _columnId, filterValue) 
   return getNodeSearchText(row.original).includes(query);
 };
 
+const exactFacetFilter: FilterFn<TableRowData> = (row, columnId, filterValue) => {
+  const query = String(filterValue ?? '').trim();
+
+  if (!query) {
+    return true;
+  }
+
+  if (row.original.isPlaceholder) {
+    return false;
+  }
+
+  return String(row.getValue(columnId) ?? '') === query;
+};
+
+const getPinnedColumnStyles = (
+  column: Column<TableRowData> | undefined,
+  options?: { isHeader?: boolean }
+): React.CSSProperties => {
+  if (!column) {
+    return {};
+  }
+
+  const pinned = column.getIsPinned();
+
+  return {
+    width: column.getSize(),
+    minWidth: column.getSize(),
+    maxWidth: column.getSize(),
+    position: pinned ? 'sticky' : 'relative',
+    left: pinned === 'left' ? `${column.getStart('left')}px` : undefined,
+    right: pinned === 'right' ? `${column.getAfter('right')}px` : undefined,
+    zIndex: options?.isHeader ? (pinned ? 35 : 20) : (pinned ? 10 : 0),
+  };
+};
+
 export const FmedaTable: React.FC = () => {
   const nodes = useFmedaStore(selectVisibleNodes);
   const selectedId = useFmedaStore((state) => state.selectedId);
@@ -208,10 +271,16 @@ export const FmedaTable: React.FC = () => {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [loadingNodeId, setLoadingNodeId] = useState<string | null>(null);
   const [sorting, setSorting] = useState<SortingState>([]);
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY);
+  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>(DEFAULT_COLUMN_PINNING);
   const selectedNode = selectedId ? nodes[selectedId] ?? null : null;
   const hasActiveFilter = globalFilter.trim().length > 0;
-  const hasActiveTableTransforms = hasActiveFilter || sorting.length > 0;
+  const hasActiveFacetFilters = columnFilters.length > 0;
+  const hasActiveAnyFilter = hasActiveFilter || hasActiveFacetFilters;
+  const hasActiveTableTransforms = hasActiveFilter || hasActiveFacetFilters || sorting.length > 0;
 
   const tableData = useMemo(() => {
     if (!selectedId) {
@@ -239,7 +308,6 @@ export const FmedaTable: React.FC = () => {
   const confirm = useConfirm();
   const [expanded, setExpanded] = useState<ExpandedState>({});
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
   const [bulkClassification, setBulkClassification] = useState<'' | 'Safe' | 'Dangerous'>('');
   const [bulkDiagnosticCoverage, setBulkDiagnosticCoverage] = useState('');
   const [bulkFitRate, setBulkFitRate] = useState('');
@@ -250,7 +318,6 @@ export const FmedaTable: React.FC = () => {
   const bulkEditorRef = useRef<HTMLFormElement>(null);
   const bulkClassificationRef = useRef<HTMLSelectElement>(null);
   const previousSelectedFailureModeCountRef = useRef(0);
-  const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
 
   const handleDelete = useCallback(async (row: Row<FmedaNode>) => {
     const original = row.original;
@@ -598,13 +665,15 @@ export const FmedaTable: React.FC = () => {
   }, []);
 
   const clearRowSelection = useCallback(() => {
-    setSelectedRowIds([]);
+    setRowSelection({});
     lastSelectedRowIdRef.current = null;
   }, []);
 
   const selectAllVisibleRows = useCallback(() => {
     const selectableRowIds = selectableRowIdsRef.current;
-    setSelectedRowIds(selectableRowIds);
+    setRowSelection(
+      Object.fromEntries(selectableRowIds.map((rowId) => [rowId, true])) as RowSelectionState
+    );
     lastSelectedRowIdRef.current = selectableRowIds[selectableRowIds.length - 1] ?? null;
   }, []);
 
@@ -616,36 +685,36 @@ export const FmedaTable: React.FC = () => {
         shouldSelect?: boolean;
       }
     ) => {
-      setSelectedRowIds((current) => {
-        const isCurrentlySelected = current.includes(rowId);
+      setRowSelection((current) => {
+        const nextSelection = { ...current };
+        const isCurrentlySelected = Boolean(nextSelection[rowId]);
         const shouldSelect = options.shouldSelect ?? !isCurrentlySelected;
 
         if (options.mode === 'replace') {
-          return shouldSelect ? [rowId] : [];
+          return shouldSelect ? { [rowId]: true } : {};
         }
 
         if (options.mode === 'range' && lastSelectedRowIdRef.current) {
           const rangeIds = getRangeSelection(lastSelectedRowIdRef.current, rowId);
-          const nextSelection = new Set(current);
 
           rangeIds.forEach((id) => {
             if (shouldSelect) {
-              nextSelection.add(id);
+              nextSelection[id] = true;
             } else {
-              nextSelection.delete(id);
+              delete nextSelection[id];
             }
           });
 
-          return Array.from(nextSelection);
+          return nextSelection;
         }
 
-        const nextSelection = new Set(current);
         if (shouldSelect) {
-          nextSelection.add(rowId);
+          nextSelection[rowId] = true;
         } else {
-          nextSelection.delete(rowId);
+          delete nextSelection[rowId];
         }
-        return Array.from(nextSelection);
+
+        return nextSelection;
       });
 
       lastSelectedRowIdRef.current = rowId;
@@ -657,6 +726,9 @@ export const FmedaTable: React.FC = () => {
     () => [
       columnHelper.accessor('name', {
         id: 'name',
+        enableHiding: false,
+        size: 384,
+        minSize: 280,
         header: ({ column }) => {
           const sort = column.getIsSorted();
 
@@ -681,7 +753,7 @@ export const FmedaTable: React.FC = () => {
         cell: ({ row, getValue }) => {
           const isFailureMode = row.original.type === 'FailureMode';
           const isRenaming = renamingId === row.original.id;
-          const isSelected = selectedRowIdSet.has(row.original.id);
+          const isSelected = row.getIsSelected();
           const fontClass =
             row.original.type === 'System' ? 'font-bold' :
             row.original.type === 'Subsystem' ? 'font-semibold' :
@@ -781,8 +853,96 @@ export const FmedaTable: React.FC = () => {
           );
         },
       }),
+      columnHelper.accessor('type', {
+        id: 'type',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by node type"
+            >
+              <span>Type</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
+        filterFn: exactFacetFilter,
+        size: 148,
+        minSize: 128,
+        cell: ({ row, getValue }) => {
+          if (row.original.isPlaceholder) {
+            return null;
+          }
+
+          const type = getValue();
+          const config = NODE_TYPE_CONFIG[type];
+
+          return (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-xs font-semibold text-gray-600 shadow-sm">
+              {config.icon}
+              {config.label}
+            </span>
+          );
+        },
+      }),
+      columnHelper.accessor((row) => row.classification ?? '', {
+        id: 'classification',
+        header: ({ column }) => {
+          const sort = column.getIsSorted();
+
+          return (
+            <button
+              type="button"
+              onClick={column.getToggleSortingHandler()}
+              className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
+              title="Sort by failure mode classification"
+            >
+              <span>Classification</span>
+              {sort === 'asc' ? (
+                <ArrowUp className="h-3.5 w-3.5" />
+              ) : sort === 'desc' ? (
+                <ArrowDown className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+              )}
+            </button>
+          );
+        },
+        filterFn: exactFacetFilter,
+        size: 156,
+        minSize: 136,
+        cell: ({ row, getValue }) => {
+          if (row.original.type !== 'FailureMode') {
+            return <span className="text-xs text-gray-400">-</span>;
+          }
+
+          const classification = getValue();
+          const badgeClass =
+            classification === 'Dangerous'
+              ? 'border-red-200 bg-red-50 text-red-700'
+              : 'border-emerald-200 bg-emerald-50 text-emerald-700';
+
+          return (
+            <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold shadow-sm', badgeClass)}>
+              {classification || 'Safe'}
+            </span>
+          );
+        },
+      }),
       columnHelper.accessor((row) => row.localEffect || '', {
         id: 'localEffect',
+        size: 320,
+        minSize: 240,
         header: ({ column }) => {
           const sort = column.getIsSorted();
 
@@ -820,6 +980,8 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => row.safetyMechanism || '', {
         id: 'safetyMechanism',
+        size: 320,
+        minSize: 240,
         header: ({ column }) => {
           const sort = column.getIsSorted();
 
@@ -859,6 +1021,8 @@ export const FmedaTable: React.FC = () => {
         (row) => (row.type === 'FailureMode' ? row.diagnosticCoverage ?? 0 : row.avgDc ?? 0),
         {
         id: 'diagnosticCoverage',
+        size: 136,
+        minSize: 120,
         header: ({ column }) => {
           const sort = column.getIsSorted();
 
@@ -918,6 +1082,8 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => (row.type === 'FailureMode' ? row.fitRate ?? 0 : row.totalFit ?? 0), {
         id: 'fitRate',
+        size: 128,
+        minSize: 112,
         header: ({ column }) => {
           const sort = column.getIsSorted();
 
@@ -971,6 +1137,9 @@ export const FmedaTable: React.FC = () => {
         id: 'actions',
         header: '',
         enableSorting: false,
+        size: 108,
+        minSize: 92,
+        enableResizing: false,
         cell: (info) => (
           <div className="flex items-center gap-1 justify-end">
             {getNextNodeType(info.row.original.type) && (
@@ -1019,7 +1188,6 @@ export const FmedaTable: React.FC = () => {
       isAiLoading,
       loadingNodeId,
       renamingId,
-      selectedRowIdSet,
       setRenamingId,
       setSelectedId,
       toggleRowSelection,
@@ -1029,13 +1197,31 @@ export const FmedaTable: React.FC = () => {
   const table = useReactTable({
     data: tableData,
     columns,
+    getRowId: (row) => row.id,
     state: {
-      expanded: hasActiveFilter ? true : expanded,
+      columnFilters,
+      columnPinning,
+      columnVisibility,
+      expanded: hasActiveTableTransforms ? true : expanded,
       globalFilter,
+      rowSelection,
       sorting,
     },
+    enableColumnPinning: true,
+    enableColumnResizing: true,
+    enableMultiRowSelection: true,
+    enableRowSelection: (row) => row.original.type === 'FailureMode' && !row.id.startsWith('placeholder-'),
+    columnResizeMode: 'onChange',
+    defaultColumn: {
+      minSize: 96,
+      size: 160,
+    },
+    onColumnFiltersChange: setColumnFilters,
+    onColumnPinningChange: setColumnPinning,
+    onColumnVisibilityChange: setColumnVisibility,
     onExpandedChange: setExpanded,
     onGlobalFilterChange: setGlobalFilter,
+    onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     globalFilterFn: globalTableFilter,
     getSubRows: (row) => {
@@ -1054,6 +1240,8 @@ export const FmedaTable: React.FC = () => {
       return children;
     },
     getCoreRowModel: getCoreRowModel(),
+    getFacetedRowModel: getFacetedRowModel(),
+    getFacetedUniqueValues: getFacetedUniqueValues(),
     getFilteredRowModel: getFilteredRowModel(),
     getExpandedRowModel: getExpandedRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -1069,10 +1257,11 @@ export const FmedaTable: React.FC = () => {
         .map((row) => row.original.id),
     [allRows]
   );
-  const selectedRows = useMemo(
-    () => allRows.filter((row) => selectedRowIdSet.has(row.original.id)),
-    [allRows, selectedRowIdSet]
+  const selectedRowIds = useMemo(
+    () => Object.keys(rowSelection).filter((rowId) => rowSelection[rowId]),
+    [rowSelection]
   );
+  const selectedRows = table.getSelectedRowModel().rows;
   const selectedFailureModeIds = useMemo(
     () =>
       selectedRows
@@ -1085,7 +1274,7 @@ export const FmedaTable: React.FC = () => {
     [selectedFailureModeIds]
   );
   const allVisibleRowsSelected =
-    selectableRowIds.length > 0 && selectedRowIds.length === selectableRowIds.length;
+    selectableRowIds.length > 0 && selectableRowIds.every((rowId) => rowSelection[rowId]);
   const visibleColumnCount = table.getVisibleLeafColumns().length;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { totalSize, virtualItems, registerItem: registerRow, scrollToIndex } = useVirtualWindow({
@@ -1106,9 +1295,22 @@ export const FmedaTable: React.FC = () => {
   useEffect(() => {
     const visibleRowIdSet = new Set(selectableRowIds);
 
-    setSelectedRowIds((current) => {
-      const next = current.filter((id) => visibleRowIdSet.has(id));
-      return next.length === current.length ? current : next;
+    setRowSelection((current) => {
+      let changed = false;
+      const next: RowSelectionState = {};
+
+      Object.entries(current).forEach(([rowId, isSelected]) => {
+        if (isSelected && visibleRowIdSet.has(rowId)) {
+          next[rowId] = true;
+          return;
+        }
+
+        if (isSelected) {
+          changed = true;
+        }
+      });
+
+      return changed ? next : current;
     });
 
     if (lastSelectedRowIdRef.current && !visibleRowIdSet.has(lastSelectedRowIdRef.current)) {
@@ -1245,7 +1447,7 @@ export const FmedaTable: React.FC = () => {
 
   // FIX #14: Context-aware empty state message
   const getEmptyStateMessage = () => {
-    if (hasActiveFilter) {
+    if (hasActiveAnyFilter) {
       return {
         title: 'No matching rows',
         sub: 'Try a different search term or clear the current filter.',
@@ -1273,15 +1475,33 @@ export const FmedaTable: React.FC = () => {
   const bulkGenerateLabel = selectedId && nextSelectedType ? `${nextSelectedType}s` : 'Systems';
   const manualAddLabel = selectedId && nextSelectedType ? nextSelectedType : 'System';
   const activeSort = sorting[0];
-  const sortColumnLabel = activeSort
-    ? ({
-        name: 'name',
-        localEffect: 'local effect',
-        safetyMechanism: 'safety mechanism',
-        diagnosticCoverage: 'diagnostic coverage',
-        fitRate: 'FIT rate',
-      }[activeSort.id] ?? activeSort.id)
-    : null;
+  const sortColumnLabel = activeSort ? COLUMN_LABELS[activeSort.id] ?? activeSort.id : null;
+  const typeColumn = table.getColumn('type');
+  const classificationColumn = table.getColumn('classification');
+  const typeFilterValue = (typeColumn?.getFilterValue() as string | undefined) ?? '';
+  const classificationFilterValue = (classificationColumn?.getFilterValue() as string | undefined) ?? '';
+  const typeFacetOptions = useMemo(() => {
+    const values = Array.from(typeColumn?.getFacetedUniqueValues().keys() ?? []).filter(
+      (value): value is FmedaNodeType => Boolean(value)
+    );
+    const order: Record<FmedaNodeType, number> = {
+      System: 0,
+      Subsystem: 1,
+      Component: 2,
+      Function: 3,
+      FailureMode: 4,
+    };
+
+    return values.sort((left, right) => order[left] - order[right]);
+  }, [typeColumn]);
+  const classificationFacetOptions = useMemo(() => {
+    const values = Array.from(classificationColumn?.getFacetedUniqueValues().keys() ?? []).filter(
+      (value): value is 'Safe' | 'Dangerous' => value === 'Safe' || value === 'Dangerous'
+    );
+    const order = ['Dangerous', 'Safe'] as const;
+
+    return values.sort((left, right) => order.indexOf(left) - order.indexOf(right));
+  }, [classificationColumn]);
 
   const getSubFailureModes = (node: FmedaNode): FmedaNode[] => {
     if (node.type === 'FailureMode') return [node];
@@ -1591,28 +1811,163 @@ export const FmedaTable: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-            <div className="relative flex-1 min-w-[16rem] max-w-xl">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-              <input
-                type="search"
-                value={globalFilter}
-                onChange={(event) => setGlobalFilter(event.target.value)}
-                placeholder={selectedNode ? `Search within ${selectedNode.name}` : 'Search names, effects, mechanisms, FIT, or classification'}
-                className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-9 text-sm text-gray-700 shadow-sm transition-colors placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              />
-              {globalFilter && (
-                <button
-                  type="button"
-                  onClick={() => setGlobalFilter('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-                  title="Clear search"
+          <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="relative flex-1 min-w-[16rem] max-w-xl">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="search"
+                  value={globalFilter}
+                  onChange={(event) => setGlobalFilter(event.target.value)}
+                  placeholder={selectedNode ? `Search within ${selectedNode.name}` : 'Search names, effects, mechanisms, FIT, or classification'}
+                  className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-9 text-sm text-gray-700 shadow-sm transition-colors placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+                {globalFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setGlobalFilter('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                    title="Clear search"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+
+              <label className="flex min-w-[10rem] flex-col gap-1 text-xs font-medium text-gray-500">
+                Type
+                <select
+                  aria-label="Filter by type"
+                  value={typeFilterValue}
+                  onChange={(event) => typeColumn?.setFilterValue(event.target.value || undefined)}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
+                  <option value="">All types</option>
+                  {typeFacetOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex min-w-[11rem] flex-col gap-1 text-xs font-medium text-gray-500">
+                Classification
+                <select
+                  aria-label="Filter by classification"
+                  value={classificationFilterValue}
+                  onChange={(event) => classificationColumn?.setFilterValue(event.target.value || undefined)}
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  <option value="">All classifications</option>
+                  {classificationFacetOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="flex items-center gap-2 self-end">
+                {hasActiveAnyFilter && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGlobalFilter('');
+                      setColumnFilters([]);
+                    }}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    Clear filters
+                  </button>
+                )}
+
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Table view options"
+                      className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                    >
+                      <Columns3 className="h-4 w-4" />
+                      View
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent align="end" className="w-[22rem] space-y-4">
+                    <div className="space-y-1">
+                      <div className="text-sm font-semibold text-gray-900">Table view</div>
+                      <div className="text-xs text-gray-500">
+                        Toggle columns, pin them left or right, and drag header edges to resize.
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {table.getAllLeafColumns().map((column) => {
+                        const pinned = column.getIsPinned();
+
+                        return (
+                          <div key={column.id} className="flex items-center gap-2 rounded-lg border border-gray-100 px-2.5 py-2">
+                            <label className="flex min-w-0 flex-1 items-center gap-2 text-sm text-gray-700">
+                              <input
+                                type="checkbox"
+                                checked={column.getIsVisible()}
+                                disabled={!column.getCanHide()}
+                                onChange={column.getToggleVisibilityHandler()}
+                                aria-label={`Toggle ${COLUMN_LABELS[column.id] ?? column.id} column`}
+                                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              />
+                              <span className={cn(!column.getCanHide() && 'text-gray-400')}>
+                                {COLUMN_LABELS[column.id] ?? column.id}
+                              </span>
+                            </label>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => column.pin(pinned === 'left' ? false : 'left')}
+                                className={cn(
+                                  'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                                  pinned === 'left'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                )}
+                              >
+                                Left
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => column.pin(pinned === 'right' ? false : 'right')}
+                                className={cn(
+                                  'rounded-md px-2 py-1 text-xs font-medium transition-colors',
+                                  pinned === 'right'
+                                    ? 'bg-blue-600 text-white'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                )}
+                              >
+                                Right
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setColumnVisibility(DEFAULT_COLUMN_VISIBILITY);
+                        setColumnPinning(DEFAULT_COLUMN_PINNING);
+                        table.resetColumnSizing();
+                      }}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+                    >
+                      Reset view
+                    </button>
+                  </PopoverContent>
+                </Popover>
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500">
               <span className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-600">
                 {allRows.length} visible row{allRows.length === 1 ? '' : 's'}
               </span>
@@ -1635,7 +1990,7 @@ export const FmedaTable: React.FC = () => {
                   Bulk edit selected
                 </button>
               )}
-              {hasActiveFilter && (
+              {hasActiveAnyFilter && (
                 <span className="rounded-full bg-blue-50 px-2.5 py-1 font-medium text-blue-700">
                   Filtered from current hierarchy scope
                 </span>
@@ -1780,27 +2135,38 @@ export const FmedaTable: React.FC = () => {
             className="overflow-auto border border-gray-200 rounded-lg shadow-sm h-[clamp(24rem,calc(100vh-15rem),48rem)]"
           >
           {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
-          <table className={cn("w-full table-fixed divide-y divide-gray-200", TABLE_MIN_WIDTH_CLASS)}>
+          <table
+            className={cn("table-fixed divide-y divide-gray-200", TABLE_MIN_WIDTH_CLASS)}
+            style={{ width: table.getTotalSize() }}
+          >
             <thead className="bg-gray-50 border-b border-gray-200 sticky top-0 z-20 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
-                  {headerGroup.headers.map((header, i) => (
+                  {headerGroup.headers.map((header) => (
                     <th
                       key={header.id}
                       className={cn(
                         "border-r border-gray-200 px-2 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 last:border-r-0",
-                        i === 0 ? "w-[24rem] min-w-[24rem]" : "",
-                        i === 1 || i === 2 ? "w-[20rem] min-w-[20rem]" : "",
-                        i === 3 || i === 4 ? "w-[8.5rem] min-w-[8.5rem]" : "",
-                        i === 5 ? "w-[7rem] min-w-[7rem]" : "",
-                        header.column.id === PINNED_HIERARCHY_COLUMN_ID
-                          ? cn("sticky left-0 z-30 border-r border-gray-200 bg-gray-50", PINNED_COLUMN_SHADOW_CLASS)
-                          : "",
+                        header.column.getIsPinned() === 'left' && cn("bg-gray-50", LEFT_PINNED_COLUMN_SHADOW_CLASS),
+                        header.column.getIsPinned() === 'right' && cn("bg-gray-50", RIGHT_PINNED_COLUMN_SHADOW_CLASS),
                       )}
+                      style={getPinnedColumnStyles(header.column, { isHeader: true })}
                     >
-                      {header.isPlaceholder
-                        ? null
-                        : flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.isPlaceholder ? null : (
+                        <div className="relative flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                          </div>
+                          {header.column.getCanResize() && (
+                            <div
+                              onDoubleClick={() => header.column.resetSize()}
+                              onMouseDown={header.getResizeHandler()}
+                              onTouchStart={header.getResizeHandler()}
+                              className="absolute right-[-3px] top-0 h-full w-1.5 cursor-col-resize rounded-full bg-transparent transition-colors hover:bg-blue-200"
+                            />
+                          )}
+                        </div>
+                      )}
                     </th>
                   ))}
                 </tr>
@@ -1821,6 +2187,7 @@ export const FmedaTable: React.FC = () => {
 
                   if (isPlaceholder) {
                     const typeConfig = NODE_TYPE_CONFIG[row.original.type];
+                    const pinnedNameColumn = table.getColumn(PINNED_HIERARCHY_COLUMN_ID);
 
                     return (
                       <tr
@@ -1830,11 +2197,13 @@ export const FmedaTable: React.FC = () => {
                       >
                         <td
                           className={cn(
-                            "sticky left-0 z-10 border-r border-gray-200 bg-gray-50 px-2 py-2 text-sm",
+                            "border-r border-gray-200 bg-gray-50 px-2 py-2 text-sm",
                             typeConfig && "border-l-[4px]",
                             typeConfig && typeConfig.accentClass.replace('bg-', 'border-l-'),
-                            PINNED_COLUMN_SHADOW_CLASS,
+                            pinnedNameColumn?.getIsPinned() === 'left' && LEFT_PINNED_COLUMN_SHADOW_CLASS,
+                            pinnedNameColumn?.getIsPinned() === 'right' && RIGHT_PINNED_COLUMN_SHADOW_CLASS,
                           )}
+                          style={getPinnedColumnStyles(pinnedNameColumn)}
                         >
                           <button
                             onClick={() => {
@@ -1858,7 +2227,7 @@ export const FmedaTable: React.FC = () => {
                   // FIX #6: Color by node type, not by depth
                   const typeConfig = NODE_TYPE_CONFIG[row.original.type];
                   const rowClass = typeConfig.rowClass;
-                  const isSelected = selectedRowIdSet.has(row.original.id);
+                  const isSelected = row.getIsSelected();
 
                   return (
                     <tr
@@ -1877,16 +2246,23 @@ export const FmedaTable: React.FC = () => {
                             "relative border-r border-gray-200 px-2 py-3 text-sm whitespace-normal group/cell last:border-r-0",
                             colIndex === 0 && "border-l-[4px]",
                             colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-'),
-                            cell.column.id === PINNED_HIERARCHY_COLUMN_ID
+                            cell.column.getIsPinned() === 'left'
                               ? cn(
-                                  "sticky left-0 z-10 border-r border-gray-200",
+                                  "border-r border-gray-200",
                                   isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
-                                  PINNED_COLUMN_SHADOW_CLASS,
+                                  LEFT_PINNED_COLUMN_SHADOW_CLASS,
                                 )
-                              : isSelected
+                              : cell.column.getIsPinned() === 'right'
+                                ? cn(
+                                    "border-r border-gray-200",
+                                    isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
+                                    RIGHT_PINNED_COLUMN_SHADOW_CLASS,
+                                  )
+                                : isSelected
                                 ? "bg-blue-50/70"
                                 : "",
                           )}
+                          style={getPinnedColumnStyles(cell.column)}
                           data-row-index={rowIndex}
                           data-col-index={colIndex}
                         >
