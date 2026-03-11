@@ -147,7 +147,7 @@ describe('FmedaTable multi-row selection', () => {
 
     expect(screen.getByText(/bulk edit selected failure modes/i)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('combobox'), {
+    fireEvent.change(screen.getByLabelText(/bulk classification/i), {
       target: { value: 'Safe' },
     });
     const [bulkDiagnosticCoverageInput, bulkFitRateInput] = screen.getAllByRole('spinbutton');
@@ -173,5 +173,26 @@ describe('FmedaTable multi-row selection', () => {
     expect(nodes['fm-2'].fitRate).toBeCloseTo(12.5);
     expect(nodes['fm-3'].fitRate).toBeCloseTo(12.5);
     expect(screen.getByText(/applied to 3 failure modes\./i)).toBeInTheDocument();
+  });
+
+  it('filters visible rows by failure mode classification', () => {
+    render(<FmedaTable />);
+
+    fireEvent.change(screen.getByLabelText(/filter by classification/i), {
+      target: { value: 'Dangerous' },
+    });
+
+    expect(screen.getByText(/no output/i)).toBeInTheDocument();
+    expect(screen.getByText(/degraded output/i)).toBeInTheDocument();
+    expect(screen.queryByText(/intermittent output/i)).not.toBeInTheDocument();
+  });
+
+  it('lets the user reveal hidden columns from the table view panel', () => {
+    render(<FmedaTable />);
+
+    fireEvent.click(screen.getByRole('button', { name: /table view options/i }));
+    fireEvent.click(screen.getByLabelText(/toggle classification column/i));
+
+    expect(screen.getByRole('columnheader', { name: /classification/i })).toBeInTheDocument();
   });
 });
