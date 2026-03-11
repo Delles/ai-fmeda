@@ -1029,6 +1029,7 @@ export const FmedaTable: React.FC = () => {
   const table = useReactTable({
     data: tableData,
     columns,
+    getRowId: (row) => row.id,
     state: {
       expanded: hasActiveFilter ? true : expanded,
       globalFilter,
