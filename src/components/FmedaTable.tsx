@@ -2,6 +2,7 @@ import React, { useMemo, useState, useCallback, useRef, useEffect } from 'react'
 import {
   type Column,
   type ColumnFiltersState,
+  type ColumnSizingState,
   type ColumnPinningState,
   type RowSelectionState,
   type VisibilityState,
@@ -61,9 +62,34 @@ import { AILoadingIndicator } from './ui/AILoadingIndicator';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { useDevRenderProfile } from '../hooks/useDevRenderProfile';
 import { useVirtualWindow } from '../hooks/useVirtualWindow';
+import { toast } from 'sonner';
 
 
 type TableRowData = FmedaNode & { isPlaceholder?: boolean };
+type EditableColumnId =
+  | 'name'
+  | 'classification'
+  | 'localEffect'
+  | 'safetyMechanism'
+  | 'diagnosticCoverage'
+  | 'fitRate';
+type NumericRangeFilterValue = {
+  min?: string;
+  max?: string;
+};
+type CellRef = {
+  rowId: string;
+  columnId: EditableColumnId;
+};
+type CellRange = {
+  anchor: CellRef;
+  focus: CellRef;
+};
+type PersistedTableViewState = {
+  columnPinning?: ColumnPinningState;
+  columnVisibility?: VisibilityState;
+  columnSizing?: ColumnSizingState;
+};
 
 const columnHelper = createColumnHelper<TableRowData>();
 
@@ -175,6 +201,8 @@ const DEFAULT_COLUMN_PINNING: ColumnPinningState = {
   left: [PINNED_HIERARCHY_COLUMN_ID],
   right: ['actions'],
 };
+const DEFAULT_COLUMN_SIZING: ColumnSizingState = {};
+const TABLE_VIEW_STORAGE_KEY = 'fmeda-table-view-state:v1';
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Hierarchy / Name',
   type: 'Type',
@@ -184,6 +212,175 @@ const COLUMN_LABELS: Record<string, string> = {
   diagnosticCoverage: 'DC (%)',
   fitRate: 'FIT Rate',
   actions: 'Actions',
+};
+const EDITABLE_COLUMN_IDS: EditableColumnId[] = [
+  'name',
+  'classification',
+  'localEffect',
+  'safetyMechanism',
+  'diagnosticCoverage',
+  'fitRate',
+];
+const EMPTY_NUMERIC_FILTER: NumericRangeFilterValue = {};
+
+const isEditableColumnId = (columnId: string): columnId is EditableColumnId =>
+  EDITABLE_COLUMN_IDS.includes(columnId as EditableColumnId);
+
+const readPersistedTableViewState = (): PersistedTableViewState => {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(TABLE_VIEW_STORAGE_KEY);
+    if (!rawValue) {
+      return {};
+    }
+
+    return JSON.parse(rawValue) as PersistedTableViewState;
+  } catch {
+    return {};
+  }
+};
+
+const getCellClipboardValue = (node: TableRowData, columnId: EditableColumnId): string => {
+  switch (columnId) {
+    case 'name':
+      return node.name ?? '';
+    case 'classification':
+      return node.classification ?? '';
+    case 'localEffect':
+      return node.localEffect ?? '';
+    case 'safetyMechanism':
+      return node.safetyMechanism ?? '';
+    case 'diagnosticCoverage':
+      return String(((node.diagnosticCoverage ?? 0) * 100).toFixed(1).replace(/\.0$/, ''));
+    case 'fitRate':
+      return String((node.fitRate ?? 0).toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1'));
+    default:
+      return '';
+  }
+};
+
+const textFacetFilter: FilterFn<TableRowData> = (row, columnId, filterValue) => {
+  const query = String(filterValue ?? '').trim().toLowerCase();
+
+  if (!query) {
+    return true;
+  }
+
+  if (row.original.isPlaceholder) {
+    return false;
+  }
+
+  return String(row.getValue(columnId) ?? '').toLowerCase().includes(query);
+};
+
+const numericRangeFilter: FilterFn<TableRowData> = (row, columnId, filterValue) => {
+  const { min, max } = (filterValue ?? {}) as NumericRangeFilterValue;
+  const minValue = min?.trim() ? Number.parseFloat(min) : undefined;
+  const maxValue = max?.trim() ? Number.parseFloat(max) : undefined;
+
+  if (minValue === undefined && maxValue === undefined) {
+    return true;
+  }
+
+  if (row.original.isPlaceholder) {
+    return false;
+  }
+
+  const value = Number(row.getValue(columnId) ?? 0);
+  const normalizedValue = columnId === 'diagnosticCoverage' ? value * 100 : value;
+
+  if (minValue !== undefined && normalizedValue < minValue) {
+    return false;
+  }
+
+  if (maxValue !== undefined && normalizedValue > maxValue) {
+    return false;
+  }
+
+  return true;
+};
+
+const normalizeClassificationValue = (value: string): 'Safe' | 'Dangerous' | null => {
+  const normalized = value.trim().toLowerCase();
+
+  if (normalized === 'safe') {
+    return 'Safe';
+  }
+
+  if (normalized === 'dangerous') {
+    return 'Dangerous';
+  }
+
+  return null;
+};
+
+const normalizeDiagnosticCoverageValue = (value: string): number | null => {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return 0;
+  }
+
+  const hasPercent = trimmed.endsWith('%');
+  const parsed = Number.parseFloat(trimmed.replace('%', ''));
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return null;
+  }
+
+  const normalized = hasPercent ? parsed / 100 : parsed <= 1 ? parsed : parsed / 100;
+
+  if (normalized < 0 || normalized > 1) {
+    return null;
+  }
+
+  return normalized;
+};
+
+const normalizeFitRateValue = (value: string): number | null => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0;
+  }
+
+  const parsed = Number.parseFloat(trimmed);
+  if (Number.isNaN(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const normalizeSpreadsheetValue = (
+  columnId: EditableColumnId,
+  value: string
+): Partial<FmedaNode> | null => {
+  const trimmed = value.trim();
+
+  switch (columnId) {
+    case 'name':
+      return { name: trimmed };
+    case 'classification': {
+      const classification = normalizeClassificationValue(trimmed);
+      return classification ? { classification } : null;
+    }
+    case 'localEffect':
+      return { localEffect: trimmed };
+    case 'safetyMechanism':
+      return { safetyMechanism: trimmed };
+    case 'diagnosticCoverage': {
+      const diagnosticCoverage = normalizeDiagnosticCoverageValue(trimmed);
+      return diagnosticCoverage === null ? null : { diagnosticCoverage };
+    }
+    case 'fitRate': {
+      const fitRate = normalizeFitRateValue(trimmed);
+      return fitRate === null ? null : { fitRate };
+    }
+    default:
+      return null;
+  }
 };
 
 const getNodeSearchText = (node: TableRowData): string => {
@@ -261,10 +458,12 @@ export const FmedaTable: React.FC = () => {
   const selectedId = useFmedaStore((state) => state.selectedId);
   const updateNode = useFmedaStore((state) => state.updateNode);
   const updateNodes = useFmedaStore((state) => state.updateNodes);
+  const applyNodeUpdates = useFmedaStore((state) => state.applyNodeUpdates);
   const deleteNode = useFmedaStore((state) => state.deleteNode);
   const addNode = useFmedaStore((state) => state.addNode);
   const setSelectedId = useFmedaStore((state) => state.setSelectedId);
   const projectContext = useFmedaStore((state) => state.projectContext);
+  const persistedTableViewStateRef = useRef<PersistedTableViewState>(readPersistedTableViewState());
 
   const aiConfig = useAIStore((state) => state.config);
 
@@ -274,8 +473,17 @@ export const FmedaTable: React.FC = () => {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(DEFAULT_COLUMN_VISIBILITY);
-  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>(DEFAULT_COLUMN_PINNING);
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
+    () => persistedTableViewStateRef.current.columnVisibility ?? DEFAULT_COLUMN_VISIBILITY
+  );
+  const [columnPinning, setColumnPinning] = useState<ColumnPinningState>(
+    () => persistedTableViewStateRef.current.columnPinning ?? DEFAULT_COLUMN_PINNING
+  );
+  const [columnSizing, setColumnSizing] = useState<ColumnSizingState>(
+    () => persistedTableViewStateRef.current.columnSizing ?? DEFAULT_COLUMN_SIZING
+  );
+  const [activeCell, setActiveCell] = useState<CellRef | null>(null);
+  const [selectionRange, setSelectionRange] = useState<CellRange | null>(null);
   const selectedNode = selectedId ? nodes[selectedId] ?? null : null;
   const hasActiveFilter = globalFilter.trim().length > 0;
   const hasActiveFacetFilters = columnFilters.length > 0;
@@ -722,31 +930,66 @@ export const FmedaTable: React.FC = () => {
     [getRangeSelection]
   );
 
+  const renderSortGlyph = useCallback(
+    (column: Column<TableRowData>) => {
+      const sort = column.getIsSorted();
+      const sortIndex = column.getSortIndex();
+
+      return (
+        <span className="inline-flex items-center gap-1">
+          {sort === 'asc' ? (
+            <ArrowUp className="h-3.5 w-3.5" />
+          ) : sort === 'desc' ? (
+            <ArrowDown className="h-3.5 w-3.5" />
+          ) : (
+            <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
+          )}
+          {sortIndex >= 0 && sorting.length > 1 && (
+            <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-100 px-1 text-[10px] font-bold text-blue-700">
+              {sortIndex + 1}
+            </span>
+          )}
+        </span>
+      );
+    },
+    [sorting.length]
+  );
+
+  const handleColumnSort = useCallback((columnId: string, multiSort: boolean) => {
+    setSorting((current) => {
+      const existingSort = current.find((entry) => entry.id === columnId);
+      const remainingSorts = multiSort ? current.filter((entry) => entry.id !== columnId) : [];
+
+      if (!existingSort) {
+        return [...remainingSorts, { id: columnId, desc: false }];
+      }
+
+      if (!existingSort.desc) {
+        return [...remainingSorts, { id: columnId, desc: true }];
+      }
+
+      return remainingSorts;
+    });
+  }, []);
+
   const columns = useMemo(
     () => [
       columnHelper.accessor('name', {
         id: 'name',
         enableHiding: false,
+        filterFn: textFacetFilter,
         size: 384,
         minSize: 280,
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by hierarchy name"
             >
               <span>Hierarchy / Name</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -780,6 +1023,7 @@ export const FmedaTable: React.FC = () => {
                       shouldSelect: event.target.checked,
                     });
                   }}
+                  data-spreadsheet-ignore="true"
                   aria-label={`Select row ${row.original.name}`}
                   className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                 />
@@ -856,23 +1100,15 @@ export const FmedaTable: React.FC = () => {
       columnHelper.accessor('type', {
         id: 'type',
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by node type"
             >
               <span>Type</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -898,23 +1134,15 @@ export const FmedaTable: React.FC = () => {
       columnHelper.accessor((row) => row.classification ?? '', {
         id: 'classification',
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by failure mode classification"
             >
               <span>Classification</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -927,40 +1155,42 @@ export const FmedaTable: React.FC = () => {
           }
 
           const classification = getValue();
-          const badgeClass =
-            classification === 'Dangerous'
-              ? 'border-red-200 bg-red-50 text-red-700'
-              : 'border-emerald-200 bg-emerald-50 text-emerald-700';
 
           return (
-            <span className={cn('inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold shadow-sm', badgeClass)}>
-              {classification || 'Safe'}
-            </span>
+            <select
+              aria-label={`Classification for ${row.original.name}`}
+              value={(classification as string) || 'Safe'}
+              onChange={(event) =>
+                handleCellSave(row, 'classification', event.target.value as 'Safe' | 'Dangerous')
+              }
+              className={cn(
+                'w-full rounded-md border px-2 py-1 text-xs font-semibold shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20',
+                classification === 'Dangerous'
+                  ? 'border-red-200 bg-red-50 text-red-700'
+                  : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              )}
+            >
+              <option value="Safe">Safe</option>
+              <option value="Dangerous">Dangerous</option>
+            </select>
           );
         },
       }),
       columnHelper.accessor((row) => row.localEffect || '', {
         id: 'localEffect',
+        filterFn: textFacetFilter,
         size: 320,
         minSize: 240,
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by local effect"
             >
               <span>Local Effect</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -980,26 +1210,19 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => row.safetyMechanism || '', {
         id: 'safetyMechanism',
+        filterFn: textFacetFilter,
         size: 320,
         minSize: 240,
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by safety mechanism"
             >
               <span>Safety Mechanism</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -1021,26 +1244,19 @@ export const FmedaTable: React.FC = () => {
         (row) => (row.type === 'FailureMode' ? row.diagnosticCoverage ?? 0 : row.avgDc ?? 0),
         {
         id: 'diagnosticCoverage',
+        filterFn: numericRangeFilter,
         size: 136,
         minSize: 120,
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by diagnostic coverage"
             >
               <span>DC (%)</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -1082,26 +1298,19 @@ export const FmedaTable: React.FC = () => {
       }),
       columnHelper.accessor((row) => (row.type === 'FailureMode' ? row.fitRate ?? 0 : row.totalFit ?? 0), {
         id: 'fitRate',
+        filterFn: numericRangeFilter,
         size: 128,
         minSize: 112,
         header: ({ column }) => {
-          const sort = column.getIsSorted();
-
           return (
             <button
               type="button"
-              onClick={column.getToggleSortingHandler()}
+              onClick={(event) => handleColumnSort(column.id, event.shiftKey)}
               className="inline-flex items-center gap-1.5 transition-colors hover:text-gray-700"
               title="Sort by FIT rate"
             >
               <span>FIT Rate</span>
-              {sort === 'asc' ? (
-                <ArrowUp className="h-3.5 w-3.5" />
-              ) : sort === 'desc' ? (
-                <ArrowDown className="h-3.5 w-3.5" />
-              ) : (
-                <ArrowUpDown className="h-3.5 w-3.5 text-gray-400" />
-              )}
+              {renderSortGlyph(column)}
             </button>
           );
         },
@@ -1143,11 +1352,12 @@ export const FmedaTable: React.FC = () => {
         cell: (info) => (
           <div className="flex items-center gap-1 justify-end">
             {getNextNodeType(info.row.original.type) && (
-              <button
-                onClick={() => handleAddChild(info.row.original)}
-                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                title={`Add ${getNextNodeType(info.row.original.type)}`}
-              >
+            <button
+              onClick={() => handleAddChild(info.row.original)}
+              data-spreadsheet-ignore="true"
+              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+              title={`Add ${getNextNodeType(info.row.original.type)}`}
+            >
                 <Plus size={15} />
               </button>
             )}
@@ -1155,6 +1365,7 @@ export const FmedaTable: React.FC = () => {
               <button
                 onClick={() => handleRowAiEdit(info.row as Row<FmedaNode>)}
                 disabled={isAiLoading}
+                data-spreadsheet-ignore="true"
                 className={cn(
                   "p-1.5 rounded-md transition-colors",
                   isAiLoading ? "text-gray-300 cursor-not-allowed" : "text-purple-600 hover:bg-purple-50"
@@ -1170,6 +1381,7 @@ export const FmedaTable: React.FC = () => {
             )}
             <button
               onClick={() => handleDelete(info.row as Row<FmedaNode>)}
+              data-spreadsheet-ignore="true"
               className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors"
               title="Delete"
             >
@@ -1181,6 +1393,7 @@ export const FmedaTable: React.FC = () => {
     ],
     [
       getAiContext,
+      handleColumnSort,
       handleAddChild,
       handleCellSave,
       handleDelete,
@@ -1188,6 +1401,7 @@ export const FmedaTable: React.FC = () => {
       isAiLoading,
       loadingNodeId,
       renamingId,
+      renderSortGlyph,
       setRenamingId,
       setSelectedId,
       toggleRowSelection,
@@ -1200,6 +1414,7 @@ export const FmedaTable: React.FC = () => {
     getRowId: (row) => row.id,
     state: {
       columnFilters,
+      columnSizing,
       columnPinning,
       columnVisibility,
       expanded: hasActiveTableTransforms ? true : expanded,
@@ -1209,6 +1424,8 @@ export const FmedaTable: React.FC = () => {
     },
     enableColumnPinning: true,
     enableColumnResizing: true,
+    enableMultiSort: true,
+    isMultiSortEvent: (event) => (event as MouseEvent).shiftKey,
     enableMultiRowSelection: true,
     enableRowSelection: (row) => row.original.type === 'FailureMode' && !row.id.startsWith('placeholder-'),
     columnResizeMode: 'onChange',
@@ -1217,6 +1434,7 @@ export const FmedaTable: React.FC = () => {
       size: 160,
     },
     onColumnFiltersChange: setColumnFilters,
+    onColumnSizingChange: setColumnSizing,
     onColumnPinningChange: setColumnPinning,
     onColumnVisibilityChange: setColumnVisibility,
     onExpandedChange: setExpanded,
@@ -1275,7 +1493,34 @@ export const FmedaTable: React.FC = () => {
   );
   const allVisibleRowsSelected =
     selectableRowIds.length > 0 && selectableRowIds.every((rowId) => rowSelection[rowId]);
-  const visibleColumnCount = table.getVisibleLeafColumns().length;
+  const visibleLeafColumns = table.getVisibleLeafColumns();
+  const visibleColumnCount = visibleLeafColumns.length;
+  const visibleEditableColumnIds = visibleLeafColumns
+    .map((column) => column.id)
+    .filter(isEditableColumnId);
+  const visibleFailureModeRows = allRows.filter(
+    (row) => row.original.type === 'FailureMode' && !row.original.id.startsWith('placeholder-')
+  );
+  const rowIndexById = useMemo(
+    () =>
+      new Map<string, number>(allRows.map((row, index) => [row.original.id, index])),
+    [allRows]
+  );
+  const failureModeRowIndexById = useMemo(
+    () =>
+      new Map<string, number>(visibleFailureModeRows.map((row, index) => [row.original.id, index])),
+    [visibleFailureModeRows]
+  );
+  const visibleColumnIndexById = useMemo(
+    () =>
+      new Map<string, number>(visibleLeafColumns.map((column, index) => [column.id, index])),
+    [visibleLeafColumns]
+  );
+  const editableColumnIndexById = useMemo(
+    () =>
+      new Map<string, number>(visibleEditableColumnIds.map((columnId, index) => [columnId, index])),
+    [visibleEditableColumnIds]
+  );
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { totalSize, virtualItems, registerItem: registerRow, scrollToIndex } = useVirtualWindow({
     count: allRows.length,
@@ -1290,6 +1535,35 @@ export const FmedaTable: React.FC = () => {
       ? Math.max(0, totalSize - virtualItems[virtualItems.length - 1].end)
       : 0;
   const isVirtualized = allRows.length > 20;
+  const getSelectionBounds = useCallback(
+    (range: CellRange | null) => {
+      if (!range) {
+        return null;
+      }
+
+      const anchorRowIndex = failureModeRowIndexById.get(range.anchor.rowId);
+      const focusRowIndex = failureModeRowIndexById.get(range.focus.rowId);
+      const anchorColumnIndex = editableColumnIndexById.get(range.anchor.columnId);
+      const focusColumnIndex = editableColumnIndexById.get(range.focus.columnId);
+
+      if (
+        anchorRowIndex === undefined ||
+        focusRowIndex === undefined ||
+        anchorColumnIndex === undefined ||
+        focusColumnIndex === undefined
+      ) {
+        return null;
+      }
+
+      return {
+        rowStart: Math.min(anchorRowIndex, focusRowIndex),
+        rowEnd: Math.max(anchorRowIndex, focusRowIndex),
+        columnStart: Math.min(anchorColumnIndex, focusColumnIndex),
+        columnEnd: Math.max(anchorColumnIndex, focusColumnIndex),
+      };
+    },
+    [editableColumnIndexById, failureModeRowIndexById]
+  );
   selectableRowIdsRef.current = selectableRowIds;
 
   useEffect(() => {
@@ -1317,6 +1591,32 @@ export const FmedaTable: React.FC = () => {
       lastSelectedRowIdRef.current = null;
     }
   }, [selectableRowIds]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(
+      TABLE_VIEW_STORAGE_KEY,
+      JSON.stringify({
+        columnPinning,
+        columnVisibility,
+        columnSizing,
+      } satisfies PersistedTableViewState)
+    );
+  }, [columnPinning, columnSizing, columnVisibility]);
+
+  useEffect(() => {
+    if (
+      activeCell &&
+      (failureModeRowIndexById.get(activeCell.rowId) === undefined ||
+        editableColumnIndexById.get(activeCell.columnId) === undefined)
+    ) {
+      setActiveCell(null);
+      setSelectionRange(null);
+    }
+  }, [activeCell, editableColumnIndexById, failureModeRowIndexById]);
 
   useEffect(() => {
     if (!bulkUpdateMessage) return;
@@ -1387,6 +1687,288 @@ export const FmedaTable: React.FC = () => {
     updateNodes,
   ]);
 
+  const isSpreadsheetCell = useCallback(
+    (row: TableRowData, columnId: string): columnId is EditableColumnId =>
+      row.type === 'FailureMode' &&
+      !row.isPlaceholder &&
+      isEditableColumnId(columnId),
+    []
+  );
+
+  const focusSpreadsheetCell = useCallback(
+    (cell: CellRef) => {
+      const rowIndex = rowIndexById.get(cell.rowId);
+      const columnIndex = visibleColumnIndexById.get(cell.columnId);
+
+      if (rowIndex === undefined || columnIndex === undefined) {
+        return;
+      }
+
+      const focusVisibleCell = () => {
+        const container = scrollContainerRef.current;
+        const selector = `td[data-row-index="${rowIndex}"][data-col-index="${columnIndex}"]`;
+        const nextCell = container?.querySelector(selector) as HTMLTableCellElement | null;
+
+        if (!nextCell) {
+          return false;
+        }
+
+        const focusTarget =
+          (nextCell.querySelector('button, input, select, textarea') as HTMLElement | null) ?? nextCell;
+        focusTarget.focus();
+        return true;
+      };
+
+      if (!focusVisibleCell()) {
+        scrollToIndex(rowIndex);
+        requestAnimationFrame(() => {
+          focusVisibleCell();
+        });
+      }
+    },
+    [rowIndexById, scrollToIndex, visibleColumnIndexById]
+  );
+
+  const setSpreadsheetSelection = useCallback(
+    (cell: CellRef, options?: { extend?: boolean; focus?: boolean }) => {
+      const nextRange =
+        options?.extend && selectionRange
+          ? { anchor: selectionRange.anchor, focus: cell }
+          : { anchor: cell, focus: cell };
+
+      setActiveCell(cell);
+      setSelectionRange(nextRange);
+
+      if (options?.focus !== false) {
+        focusSpreadsheetCell(cell);
+      }
+    },
+    [focusSpreadsheetCell, selectionRange]
+  );
+
+  const isCellSelected = useCallback(
+    (rowId: string, columnId: string) => {
+      if (!isEditableColumnId(columnId)) {
+        return false;
+      }
+
+      const bounds = getSelectionBounds(selectionRange);
+      const rowIndex = failureModeRowIndexById.get(rowId);
+      const columnIndex = editableColumnIndexById.get(columnId);
+
+      if (!bounds || rowIndex === undefined || columnIndex === undefined) {
+        return false;
+      }
+
+      return (
+        rowIndex >= bounds.rowStart &&
+        rowIndex <= bounds.rowEnd &&
+        columnIndex >= bounds.columnStart &&
+        columnIndex <= bounds.columnEnd
+      );
+    },
+    [editableColumnIndexById, failureModeRowIndexById, getSelectionBounds, selectionRange]
+  );
+
+  const handleSpreadsheetCopy = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement;
+      if (
+        target.closest('input, textarea, [contenteditable="true"]') ||
+        !selectionRange
+      ) {
+        return;
+      }
+
+      const bounds = getSelectionBounds(selectionRange);
+      if (!bounds) {
+        return;
+      }
+
+      const rows = visibleFailureModeRows.slice(bounds.rowStart, bounds.rowEnd + 1);
+      const columns = visibleEditableColumnIds.slice(bounds.columnStart, bounds.columnEnd + 1);
+      const copiedText = rows
+        .map((row) =>
+          columns
+            .map((columnId) => getCellClipboardValue(row.original, columnId))
+            .join('\t')
+        )
+        .join('\n');
+
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', copiedText);
+      toast.success(
+        rows.length === 1 && columns.length === 1
+          ? 'Copied active cell.'
+          : `Copied ${rows.length} row${rows.length === 1 ? '' : 's'} x ${columns.length} column${columns.length === 1 ? '' : 's'}.`
+      );
+    },
+    [getSelectionBounds, selectionRange, visibleEditableColumnIds, visibleFailureModeRows]
+  );
+
+  const handleSpreadsheetPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement;
+      if (
+        target.closest('input, textarea, [contenteditable="true"]') ||
+        !activeCell
+      ) {
+        return;
+      }
+
+      const rawText = event.clipboardData.getData('text/plain');
+      if (!rawText.trim()) {
+        return;
+      }
+
+      const startRowIndex = failureModeRowIndexById.get(activeCell.rowId);
+      const startColumnIndex = editableColumnIndexById.get(activeCell.columnId);
+
+      if (startRowIndex === undefined || startColumnIndex === undefined) {
+        return;
+      }
+
+      const rows = rawText
+        .replace(/\r\n/g, '\n')
+        .split('\n')
+        .filter((row, index, source) => row.length > 0 || index < source.length - 1);
+
+      const patchMap = new Map<string, Partial<FmedaNode>>();
+      let appliedCellCount = 0;
+      let skippedCellCount = 0;
+      let overflowCellCount = 0;
+
+      rows.forEach((rowText, rowOffset) => {
+        const targetRow = visibleFailureModeRows[startRowIndex + rowOffset];
+        const values = rowText.split('\t');
+
+        values.forEach((value, columnOffset) => {
+          const targetColumnId = visibleEditableColumnIds[startColumnIndex + columnOffset];
+
+          if (!targetRow || !targetColumnId) {
+            overflowCellCount += 1;
+            return;
+          }
+
+          const normalizedPatch = normalizeSpreadsheetValue(targetColumnId, value);
+          if (!normalizedPatch) {
+            skippedCellCount += 1;
+            return;
+          }
+
+          const existingPatch = patchMap.get(targetRow.original.id) ?? {};
+          patchMap.set(targetRow.original.id, { ...existingPatch, ...normalizedPatch });
+          appliedCellCount += 1;
+        });
+      });
+
+      event.preventDefault();
+
+      if (patchMap.size === 0) {
+        toast.error('Paste did not contain any valid spreadsheet values.');
+        return;
+      }
+
+      applyNodeUpdates(
+        Array.from(patchMap.entries()).map(([id, updates]) => ({
+          id,
+          updates,
+        }))
+      );
+
+      setSelectionRange({
+        anchor: activeCell,
+        focus: {
+          rowId:
+            visibleFailureModeRows[Math.min(visibleFailureModeRows.length - 1, startRowIndex + rows.length - 1)]
+              ?.original.id ?? activeCell.rowId,
+          columnId:
+            visibleEditableColumnIds[
+              Math.min(visibleEditableColumnIds.length - 1, startColumnIndex + Math.max(0, rows[0]?.split('\t').length - 1))
+            ] ?? activeCell.columnId,
+        },
+      });
+
+      const feedback: string[] = [`Applied ${appliedCellCount} cell${appliedCellCount === 1 ? '' : 's'}.`];
+      if (skippedCellCount > 0) {
+        feedback.push(`Skipped ${skippedCellCount} invalid value${skippedCellCount === 1 ? '' : 's'}.`);
+      }
+      if (overflowCellCount > 0) {
+        feedback.push(`Ignored ${overflowCellCount} overflow cell${overflowCellCount === 1 ? '' : 's'}.`);
+      }
+      toast.success(feedback.join(' '));
+    },
+    [
+      activeCell,
+      applyNodeUpdates,
+      editableColumnIndexById,
+      failureModeRowIndexById,
+      visibleEditableColumnIds,
+      visibleFailureModeRows,
+    ]
+  );
+
+  const handleFillDown = useCallback(() => {
+    if (!activeCell || !selectionRange) {
+      return;
+    }
+
+    const bounds = getSelectionBounds(selectionRange);
+    if (!bounds) {
+      return;
+    }
+
+    const sourceRow = visibleFailureModeRows[bounds.rowStart];
+    if (!sourceRow) {
+      return;
+    }
+
+    const patchMap = new Map<string, Partial<FmedaNode>>();
+
+    for (let c = bounds.columnStart; c <= bounds.columnEnd; c++) {
+      const columnId = visibleEditableColumnIds[c];
+      if (!columnId || !isEditableColumnId(columnId)) {
+        continue;
+      }
+
+      const sourceValue = getCellClipboardValue(sourceRow.original, columnId);
+      const updates = normalizeSpreadsheetValue(columnId, sourceValue);
+      
+      if (!updates) {
+        continue;
+      }
+
+      for (let r = bounds.rowStart; r <= bounds.rowEnd; r++) {
+        const targetRow = visibleFailureModeRows[r];
+        if (!targetRow || targetRow.original.id === sourceRow.original.id) {
+          continue;
+        }
+
+        const existingPatch = patchMap.get(targetRow.original.id) ?? {};
+        patchMap.set(targetRow.original.id, { ...existingPatch, ...updates });
+      }
+    }
+
+    const patches = Array.from(patchMap.entries()).map(([id, updates]) => ({
+      id,
+      updates,
+    }));
+
+    if (patches.length === 0) {
+      return;
+    }
+
+    applyNodeUpdates(patches);
+    toast.success(`Filled down ${patches.length} row${patches.length === 1 ? '' : 's'}.`);
+  }, [
+    activeCell,
+    applyNodeUpdates,
+    getSelectionBounds,
+    selectionRange,
+    visibleEditableColumnIds,
+    visibleFailureModeRows,
+  ]);
+
   useDevRenderProfile('FmedaTable', {
     selectedId: selectedId ?? 'all',
     totalRows: allRows.length,
@@ -1395,32 +1977,99 @@ export const FmedaTable: React.FC = () => {
     selectedRows: selectedRowIds.length,
   });
 
-  const handleTableKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+  const handleTableKeyDown = useCallback((event: React.KeyboardEvent) => {
+    const target = event.target as HTMLElement;
 
-    const target = e.target as HTMLElement;
+    if (target.closest('input, textarea, select, [contenteditable="true"]')) {
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+      event.preventDefault();
+      handleFillDown();
+      return;
+    }
+
+    if (activeCell && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      const currentRowIndex = failureModeRowIndexById.get(activeCell.rowId);
+      const currentColumnIndex = editableColumnIndexById.get(activeCell.columnId);
+
+      if (currentRowIndex === undefined || currentColumnIndex === undefined) {
+        return;
+      }
+
+      let nextRowIndex = currentRowIndex;
+      let nextColumnIndex = currentColumnIndex;
+
+      switch (event.key) {
+        case 'ArrowUp':
+          nextRowIndex -= 1;
+          break;
+        case 'ArrowDown':
+          nextRowIndex += 1;
+          break;
+        case 'ArrowLeft':
+          nextColumnIndex -= 1;
+          break;
+        case 'ArrowRight':
+          nextColumnIndex += 1;
+          break;
+      }
+
+      if (
+        nextRowIndex >= 0 &&
+        nextRowIndex < visibleFailureModeRows.length &&
+        nextColumnIndex >= 0 &&
+        nextColumnIndex < visibleEditableColumnIds.length
+      ) {
+        setSpreadsheetSelection(
+          {
+            rowId: visibleFailureModeRows[nextRowIndex].original.id,
+            columnId: visibleEditableColumnIds[nextColumnIndex],
+          },
+          { extend: event.shiftKey }
+        );
+        event.preventDefault();
+      }
+
+      return;
+    }
+
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      return;
+    }
+
     const cell = target.closest('td');
-    if (!cell) return;
+    if (!cell) {
+      return;
+    }
 
-    const rowIndex = parseInt(cell.getAttribute('data-row-index') || '-1');
-    const colIndex = parseInt(cell.getAttribute('data-col-index') || '-1');
+    const rowIndex = Number.parseInt(cell.getAttribute('data-row-index') || '-1', 10);
+    const colIndex = Number.parseInt(cell.getAttribute('data-col-index') || '-1', 10);
 
-    if (rowIndex === -1 || colIndex === -1) return;
+    if (rowIndex === -1 || colIndex === -1) {
+      return;
+    }
 
     let nextRow = rowIndex;
     let nextCol = colIndex;
 
-    const totalRows = allRows.length;
-    const totalCols = table.getVisibleLeafColumns().length;
-
-    switch (e.key) {
-      case 'ArrowUp': nextRow--; break;
-      case 'ArrowDown': nextRow++; break;
-      case 'ArrowLeft': nextCol--; break;
-      case 'ArrowRight': nextCol++; break;
+    switch (event.key) {
+      case 'ArrowUp':
+        nextRow -= 1;
+        break;
+      case 'ArrowDown':
+        nextRow += 1;
+        break;
+      case 'ArrowLeft':
+        nextCol -= 1;
+        break;
+      case 'ArrowRight':
+        nextCol += 1;
+        break;
     }
 
-    if (nextRow >= 0 && nextRow < totalRows && nextCol >= 0 && nextCol < totalCols) {
+    if (nextRow >= 0 && nextRow < allRows.length && nextCol >= 0 && nextCol < visibleLeafColumns.length) {
       const focusSelector = `td[data-row-index="${nextRow}"][data-col-index="${nextCol}"]`;
       const container = scrollContainerRef.current;
       const focusVisibleCell = () => {
@@ -1441,9 +2090,20 @@ export const FmedaTable: React.FC = () => {
         });
       }
 
-      e.preventDefault();
+      event.preventDefault();
     }
-  }, [allRows.length, scrollToIndex, table]);
+  }, [
+    activeCell,
+    allRows.length,
+    editableColumnIndexById,
+    failureModeRowIndexById,
+    handleFillDown,
+    scrollToIndex,
+    setSpreadsheetSelection,
+    visibleEditableColumnIds,
+    visibleFailureModeRows,
+    visibleLeafColumns.length,
+  ]);
 
   // FIX #14: Context-aware empty state message
   const getEmptyStateMessage = () => {
@@ -1476,10 +2136,22 @@ export const FmedaTable: React.FC = () => {
   const manualAddLabel = selectedId && nextSelectedType ? nextSelectedType : 'System';
   const activeSort = sorting[0];
   const sortColumnLabel = activeSort ? COLUMN_LABELS[activeSort.id] ?? activeSort.id : null;
+  const nameColumn = table.getColumn('name');
   const typeColumn = table.getColumn('type');
   const classificationColumn = table.getColumn('classification');
+  const localEffectColumn = table.getColumn('localEffect');
+  const safetyMechanismColumn = table.getColumn('safetyMechanism');
+  const diagnosticCoverageColumn = table.getColumn('diagnosticCoverage');
+  const fitRateColumn = table.getColumn('fitRate');
+  const nameFilterValue = (nameColumn?.getFilterValue() as string | undefined) ?? '';
   const typeFilterValue = (typeColumn?.getFilterValue() as string | undefined) ?? '';
   const classificationFilterValue = (classificationColumn?.getFilterValue() as string | undefined) ?? '';
+  const localEffectFilterValue = (localEffectColumn?.getFilterValue() as string | undefined) ?? '';
+  const safetyMechanismFilterValue = (safetyMechanismColumn?.getFilterValue() as string | undefined) ?? '';
+  const diagnosticCoverageFilterValue =
+    (diagnosticCoverageColumn?.getFilterValue() as NumericRangeFilterValue | undefined) ?? EMPTY_NUMERIC_FILTER;
+  const fitRateFilterValue =
+    (fitRateColumn?.getFilterValue() as NumericRangeFilterValue | undefined) ?? EMPTY_NUMERIC_FILTER;
   const typeFacetOptions = useMemo(() => {
     const values = Array.from(typeColumn?.getFacetedUniqueValues().keys() ?? []).filter(
       (value): value is FmedaNodeType => Boolean(value)
@@ -1502,6 +2174,24 @@ export const FmedaTable: React.FC = () => {
 
     return values.sort((left, right) => order.indexOf(left) - order.indexOf(right));
   }, [classificationColumn]);
+  const updateNumericColumnFilter = useCallback(
+    (columnId: 'diagnosticCoverage' | 'fitRate', updates: Partial<NumericRangeFilterValue>) => {
+      const column = table.getColumn(columnId);
+      const currentFilter = (column?.getFilterValue() as NumericRangeFilterValue | undefined) ?? EMPTY_NUMERIC_FILTER;
+      const nextFilter = {
+        ...currentFilter,
+        ...updates,
+      };
+
+      if (!nextFilter.min?.trim() && !nextFilter.max?.trim()) {
+        column?.setFilterValue(undefined);
+        return;
+      }
+
+      column?.setFilterValue(nextFilter);
+    },
+    [table]
+  );
 
   const getSubFailureModes = (node: FmedaNode): FmedaNode[] => {
     if (node.type === 'FailureMode') return [node];
@@ -1834,6 +2524,17 @@ export const FmedaTable: React.FC = () => {
                 )}
               </div>
 
+              <label className="flex min-w-[13rem] flex-col gap-1 text-xs font-medium text-gray-500">
+                Failure mode name
+                <input
+                  aria-label="Filter by failure mode name"
+                  value={nameFilterValue}
+                  onChange={(event) => nameColumn?.setFilterValue(event.target.value || undefined)}
+                  placeholder="Contains..."
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </label>
+
               <label className="flex min-w-[10rem] flex-col gap-1 text-xs font-medium text-gray-500">
                 Type
                 <select
@@ -1924,6 +2625,7 @@ export const FmedaTable: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => column.pin(pinned === 'left' ? false : 'left')}
+                                aria-label={`Pin ${COLUMN_LABELS[column.id] ?? column.id} left`}
                                 className={cn(
                                   'rounded-md px-2 py-1 text-xs font-medium transition-colors',
                                   pinned === 'left'
@@ -1936,6 +2638,7 @@ export const FmedaTable: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => column.pin(pinned === 'right' ? false : 'right')}
+                                aria-label={`Pin ${COLUMN_LABELS[column.id] ?? column.id} right`}
                                 className={cn(
                                   'rounded-md px-2 py-1 text-xs font-medium transition-colors',
                                   pinned === 'right'
@@ -1956,6 +2659,7 @@ export const FmedaTable: React.FC = () => {
                       onClick={() => {
                         setColumnVisibility(DEFAULT_COLUMN_VISIBILITY);
                         setColumnPinning(DEFAULT_COLUMN_PINNING);
+                        setColumnSizing(DEFAULT_COLUMN_SIZING);
                         table.resetColumnSizing();
                       }}
                       className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
@@ -1964,6 +2668,95 @@ export const FmedaTable: React.FC = () => {
                     </button>
                   </PopoverContent>
                 </Popover>
+              </div>
+            </div>
+
+            <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-gray-500">
+                Local effect
+                <input
+                  aria-label="Filter by local effect"
+                  value={localEffectFilterValue}
+                  onChange={(event) => localEffectColumn?.setFilterValue(event.target.value || undefined)}
+                  placeholder="Contains..."
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </label>
+
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-gray-500">
+                Safety mechanism
+                <input
+                  aria-label="Filter by safety mechanism"
+                  value={safetyMechanismFilterValue}
+                  onChange={(event) => safetyMechanismColumn?.setFilterValue(event.target.value || undefined)}
+                  placeholder="Contains..."
+                  className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </label>
+
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-gray-500">
+                DC min/max
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    aria-label="Minimum diagnostic coverage"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={diagnosticCoverageFilterValue.min ?? ''}
+                    onChange={(event) => updateNumericColumnFilter('diagnosticCoverage', { min: event.target.value })}
+                    placeholder="Min %"
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <input
+                    aria-label="Maximum diagnostic coverage"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={diagnosticCoverageFilterValue.max ?? ''}
+                    onChange={(event) => updateNumericColumnFilter('diagnosticCoverage', { max: event.target.value })}
+                    placeholder="Max %"
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+              </label>
+
+              <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-gray-500">
+                FIT min/max
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    aria-label="Minimum FIT rate"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={0.1}
+                    value={fitRateFilterValue.min ?? ''}
+                    onChange={(event) => updateNumericColumnFilter('fitRate', { min: event.target.value })}
+                    placeholder="Min"
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <input
+                    aria-label="Maximum FIT rate"
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={0.1}
+                    value={fitRateFilterValue.max ?? ''}
+                    onChange={(event) => updateNumericColumnFilter('fitRate', { max: event.target.value })}
+                    placeholder="Max"
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm placeholder:text-gray-400 focus:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+              </label>
+
+              <div className="flex flex-col justify-end rounded-xl border border-dashed border-gray-200 bg-gray-50/80 px-3 py-2 text-xs text-gray-500">
+                <span className="font-semibold text-gray-700">Spreadsheet shortcuts</span>
+                <span className="mt-1">Copy: Ctrl/Cmd+C</span>
+                <span>Paste: Ctrl/Cmd+V</span>
+                <span>Fill down: Ctrl/Cmd+D</span>
               </div>
             </div>
 
@@ -1979,6 +2772,11 @@ export const FmedaTable: React.FC = () => {
               {selectedFailureModeCount > 0 && (
                 <span className="rounded-full bg-emerald-50 px-2.5 py-1 font-medium text-emerald-700">
                   {selectedFailureModeCount} failure mode{selectedFailureModeCount === 1 ? '' : 's'} selected
+                </span>
+              )}
+              {selectionRange && activeCell && (
+                <span className="rounded-full bg-indigo-50 px-2.5 py-1 font-medium text-indigo-700">
+                  Active cell: {COLUMN_LABELS[activeCell.columnId]} ({selectionRange.anchor.rowId === selectionRange.focus.rowId && selectionRange.anchor.columnId === selectionRange.focus.columnId ? 'single' : 'range'})
                 </span>
               )}
               {selectedFailureModeCount > 0 && (
@@ -2021,6 +2819,18 @@ export const FmedaTable: React.FC = () => {
                   className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 transition-colors hover:bg-gray-200"
                 >
                   Clear selection
+                </button>
+              )}
+              {selectionRange && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveCell(null);
+                    setSelectionRange(null);
+                  }}
+                  className="rounded-full bg-gray-100 px-2.5 py-1 font-medium text-gray-700 transition-colors hover:bg-gray-200"
+                >
+                  Clear cell range
                 </button>
               )}
               <span className="text-gray-400">
@@ -2132,7 +2942,12 @@ export const FmedaTable: React.FC = () => {
 
           <div
             ref={scrollContainerRef}
-            className="overflow-auto border border-gray-200 rounded-lg shadow-sm h-[clamp(24rem,calc(100vh-15rem),48rem)]"
+            aria-label="FMEDA spreadsheet grid"
+            onKeyDownCapture={handleTableKeyDown}
+            onCopyCapture={handleSpreadsheetCopy}
+            onPasteCapture={handleSpreadsheetPaste}
+            tabIndex={0}
+            className="overflow-auto border border-gray-200 rounded-lg shadow-sm h-[clamp(24rem,calc(100vh-15rem),48rem)] focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           >
           {/* FIX #9: Single border strategy — wrapper border only, no border-x on cells */}
           <table
@@ -2172,7 +2987,7 @@ export const FmedaTable: React.FC = () => {
                 </tr>
               ))}
             </thead>
-            <tbody className="bg-white divide-y divide-gray-100" onKeyDown={handleTableKeyDown}>
+            <tbody className="bg-white divide-y divide-gray-100">
               {allRows.length > 0 ? (
                 <>
                   {paddingTop > 0 && (
@@ -2210,6 +3025,7 @@ export const FmedaTable: React.FC = () => {
                               const parent = row.original.parentId ? nodes[row.original.parentId] : null;
                               if (parent) handleAddChild(parent);
                             }}
+                            data-spreadsheet-ignore="true"
                             className="flex items-center gap-2 text-blue-500/80 hover:text-blue-700 font-medium transition-all px-3 py-2 rounded-md hover:bg-white w-[85%] text-left border border-blue-50 hover:border-blue-200 hover:shadow-sm"
                             style={{ marginLeft: `${row.depth * 1.25 + 1.25}rem` }}
                           >
@@ -2240,34 +3056,66 @@ export const FmedaTable: React.FC = () => {
                       )}
                     >
                       {row.getVisibleCells().map((cell, colIndex) => (
-                        <td
-                          key={cell.id}
-                          className={cn(
-                            "relative border-r border-gray-200 px-2 py-3 text-sm whitespace-normal group/cell last:border-r-0",
-                            colIndex === 0 && "border-l-[4px]",
-                            colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-'),
-                            cell.column.getIsPinned() === 'left'
-                              ? cn(
-                                  "border-r border-gray-200",
-                                  isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
-                                  LEFT_PINNED_COLUMN_SHADOW_CLASS,
-                                )
-                              : cell.column.getIsPinned() === 'right'
-                                ? cn(
-                                    "border-r border-gray-200",
-                                    isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
-                                    RIGHT_PINNED_COLUMN_SHADOW_CLASS,
-                                  )
-                                : isSelected
-                                ? "bg-blue-50/70"
-                                : "",
-                          )}
-                          style={getPinnedColumnStyles(cell.column)}
-                          data-row-index={rowIndex}
-                          data-col-index={colIndex}
-                        >
-                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                        </td>
+                        (() => {
+                          const isEditableCell = isSpreadsheetCell(row.original, cell.column.id);
+                          const isActiveSpreadsheetCell =
+                            activeCell?.rowId === row.original.id && activeCell.columnId === cell.column.id;
+                          const isWithinSpreadsheetSelection = isCellSelected(row.original.id, cell.column.id);
+
+                          return (
+                            <td
+                              key={cell.id}
+                              className={cn(
+                                "relative border-r border-gray-200 px-2 py-3 text-sm whitespace-normal group/cell last:border-r-0",
+                                colIndex === 0 && "border-l-[4px]",
+                                colIndex === 0 && typeConfig.accentClass.replace('bg-', 'border-l-'),
+                                isEditableCell && "cursor-cell select-none",
+                                cell.column.getIsPinned() === 'left'
+                                  ? cn(
+                                      "border-r border-gray-200",
+                                      isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
+                                      LEFT_PINNED_COLUMN_SHADOW_CLASS,
+                                    )
+                                  : cell.column.getIsPinned() === 'right'
+                                    ? cn(
+                                        "border-r border-gray-200",
+                                        isSelected ? "bg-blue-50/95 text-blue-950" : typeConfig.stickyCellClass,
+                                        RIGHT_PINNED_COLUMN_SHADOW_CLASS,
+                                      )
+                                    : isSelected
+                                    ? "bg-blue-50/70"
+                                    : "",
+                                isWithinSpreadsheetSelection && "bg-indigo-50/70",
+                                isActiveSpreadsheetCell && "ring-2 ring-inset ring-indigo-500 bg-indigo-50/90"
+                              )}
+                              style={getPinnedColumnStyles(cell.column)}
+                              data-row-index={rowIndex}
+                              data-col-index={colIndex}
+                              data-row-id={row.original.id}
+                              data-column-id={cell.column.id}
+                              onMouseDownCapture={(event) => {
+                                if (!isEditableCell) {
+                                  return;
+                                }
+
+                                const target = event.target as HTMLElement;
+                                if (target.closest('[data-spreadsheet-ignore="true"]')) {
+                                  return;
+                                }
+
+                                setSpreadsheetSelection(
+                                  {
+                                    rowId: row.original.id,
+                                    columnId: cell.column.id as EditableColumnId,
+                                  },
+                                  { extend: event.shiftKey, focus: false }
+                                );
+                              }}
+                            >
+                              {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            </td>
+                          );
+                        })()
                       ))}
                     </tr>
                   );
