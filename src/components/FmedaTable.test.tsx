@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useFmedaStore } from '../store/fmedaStore';
 import { FmedaNode } from '../types/fmeda';
@@ -83,6 +83,39 @@ const sampleNodes: Record<string, FmedaNode> = {
     classification: 'Safe',
   },
 };
+const TABLE_VIEW_STORAGE_KEY = 'fmeda-table-view-state:v1';
+
+const setPersistedTableViewState = (overrides: Record<string, unknown>) => {
+  localStorage.setItem(
+    TABLE_VIEW_STORAGE_KEY,
+    JSON.stringify({
+      columnPinning: {
+        left: ['name'],
+        right: ['actions'],
+      },
+      columnVisibility: {
+        type: false,
+        classification: false,
+      },
+      columnSizing: {},
+      ...overrides,
+    })
+  );
+};
+
+const getGrid = () => screen.getByLabelText(/fmeda spreadsheet grid/i);
+
+const selectCellByText = (text: RegExp | string, options?: { shiftKey?: boolean }) => {
+  const cell = screen.getByText(text).closest('td');
+  expect(cell).not.toBeNull();
+  fireEvent.mouseDown(cell as HTMLTableCellElement, options);
+  return cell as HTMLTableCellElement;
+};
+
+const createClipboardData = (initialText = '') => ({
+  getData: vi.fn(() => initialText),
+  setData: vi.fn(),
+});
 
 describe('FmedaTable multi-row selection', () => {
   beforeEach(() => {
@@ -150,12 +183,11 @@ describe('FmedaTable multi-row selection', () => {
     fireEvent.change(screen.getByLabelText(/bulk classification/i), {
       target: { value: 'Safe' },
     });
-    const [bulkDiagnosticCoverageInput, bulkFitRateInput] = screen.getAllByRole('spinbutton');
 
-    fireEvent.change(bulkDiagnosticCoverageInput, {
+    fireEvent.change(screen.getByLabelText(/bulk diagnostic coverage/i), {
       target: { value: '75' },
     });
-    fireEvent.change(bulkFitRateInput, {
+    fireEvent.change(screen.getByLabelText(/bulk fit rate/i), {
       target: { value: '12.5' },
     });
 
@@ -187,6 +219,43 @@ describe('FmedaTable multi-row selection', () => {
     expect(screen.queryByText(/intermittent output/i)).not.toBeInTheDocument();
   });
 
+  it('supports text and numeric column filters for spreadsheet-heavy views', () => {
+    act(() => {
+      useFmedaStore.setState({
+        nodes: {
+          ...sampleNodes,
+          'fm-1': {
+            ...sampleNodes['fm-1'],
+            localEffect: 'Brake pressure lost',
+          },
+          'fm-2': {
+            ...sampleNodes['fm-2'],
+            localEffect: 'Brake pressure reduced',
+          },
+          'fm-3': {
+            ...sampleNodes['fm-3'],
+            localEffect: 'Signal jitter',
+          },
+        },
+        projectContext: null,
+        selectedId: 'func-1',
+      });
+    });
+
+    render(<FmedaTable />);
+
+    fireEvent.change(screen.getByLabelText(/filter by local effect/i), {
+      target: { value: 'Brake pressure' },
+    });
+    fireEvent.change(screen.getByLabelText(/maximum diagnostic coverage/i), {
+      target: { value: '80' },
+    });
+
+    expect(screen.queryByText(/no output/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/degraded output/i)).toBeInTheDocument();
+    expect(screen.queryByText(/intermittent output/i)).not.toBeInTheDocument();
+  });
+
   it('lets the user reveal hidden columns from the table view panel', () => {
     render(<FmedaTable />);
 
@@ -194,5 +263,149 @@ describe('FmedaTable multi-row selection', () => {
     fireEvent.click(screen.getByLabelText(/toggle classification column/i));
 
     expect(screen.getByRole('columnheader', { name: /classification/i })).toBeInTheDocument();
+  });
+
+  it('restores persisted view state for pinned and visible columns', () => {
+    setPersistedTableViewState({
+      columnPinning: {
+        left: ['name', 'classification'],
+        right: ['actions'],
+      },
+      columnVisibility: {
+        type: false,
+        classification: true,
+      },
+      columnSizing: {
+        classification: 220,
+      },
+    });
+
+    render(<FmedaTable />);
+
+    const classificationHeader = screen.getByRole('columnheader', { name: /classification/i });
+
+    expect(classificationHeader).toBeInTheDocument();
+    expect(classificationHeader).toHaveStyle({ position: 'sticky' });
+    expect(classificationHeader.style.left).not.toBe('');
+  });
+
+  it('supports multi-sort with shift-click on headers', () => {
+    setPersistedTableViewState({
+      columnVisibility: {
+        type: false,
+        classification: true,
+      },
+    });
+
+    render(<FmedaTable />);
+
+    fireEvent.click(screen.getByRole('button', { name: /classification/i }));
+    fireEvent.click(screen.getByRole('button', { name: /fit rate/i }), { shiftKey: true });
+
+    const table = screen.getByRole('table');
+    const rows = within(table)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => row.textContent ?? '');
+
+    expect(rows[0]).toContain('Degraded output');
+    expect(rows[1]).toContain('No output');
+    expect(rows[2]).toContain('Intermittent output');
+  });
+
+  it('copies the selected cell range as TSV', () => {
+    setPersistedTableViewState({
+      columnVisibility: {
+        type: false,
+        classification: true,
+      },
+    });
+
+    render(<FmedaTable />);
+
+    selectCellByText(/no output/i);
+    const classificationCell = screen.getByLabelText(/classification for degraded output/i).closest('td');
+    expect(classificationCell).not.toBeNull();
+    fireEvent.mouseDown(classificationCell as HTMLTableCellElement, { shiftKey: true });
+
+    const clipboardData = createClipboardData();
+    fireEvent.copy(getGrid(), { clipboardData });
+
+    expect(clipboardData.setData).toHaveBeenCalledWith(
+      'text/plain',
+      'No output\tDangerous\nDegraded output\tDangerous'
+    );
+  });
+
+  it('pastes multi-column clipboard data into spreadsheet cells', () => {
+    setPersistedTableViewState({
+      columnVisibility: {
+        type: false,
+        classification: true,
+      },
+    });
+
+    render(<FmedaTable />);
+
+    selectCellByText(/no output/i);
+
+    const clipboardData = createClipboardData(
+      'Renamed failure\tSafe\tUpdated effect\tUpdated mechanism\t75\t12.5\nSecond failure\tDangerous\tSecond effect\tSecond mechanism\t0.25\t2'
+    );
+    fireEvent.paste(getGrid(), { clipboardData });
+
+    const nodes = useFmedaStore.getState().nodes;
+
+    expect(nodes['fm-1'].name).toBe('Renamed failure');
+    expect(nodes['fm-1'].classification).toBe('Safe');
+    expect(nodes['fm-1'].localEffect).toBe('Updated effect');
+    expect(nodes['fm-1'].safetyMechanism).toBe('Updated mechanism');
+    expect(nodes['fm-1'].diagnosticCoverage).toBeCloseTo(0.75);
+    expect(nodes['fm-1'].fitRate).toBeCloseTo(12.5);
+
+    expect(nodes['fm-2'].name).toBe('Second failure');
+    expect(nodes['fm-2'].classification).toBe('Dangerous');
+    expect(nodes['fm-2'].localEffect).toBe('Second effect');
+    expect(nodes['fm-2'].safetyMechanism).toBe('Second mechanism');
+    expect(nodes['fm-2'].diagnosticCoverage).toBeCloseTo(0.25);
+    expect(nodes['fm-2'].fitRate).toBeCloseTo(2);
+  });
+
+  it('skips invalid pasted values while applying valid spreadsheet cells', () => {
+    render(<FmedaTable />);
+
+    const dcCell = screen.getByText('60.0%').closest('td');
+    expect(dcCell).not.toBeNull();
+    fireEvent.mouseDown(dcCell as HTMLTableCellElement);
+
+    const clipboardData = createClipboardData('not-a-number\t5\n75\t2');
+    fireEvent.paste(getGrid(), { clipboardData });
+
+    const nodes = useFmedaStore.getState().nodes;
+
+    expect(nodes['fm-2'].diagnosticCoverage).toBeCloseTo(0.6);
+    expect(nodes['fm-2'].fitRate).toBeCloseTo(5);
+    expect(nodes['fm-3'].diagnosticCoverage).toBeCloseTo(0.75);
+    expect(nodes['fm-3'].fitRate).toBeCloseTo(2);
+  });
+
+  it('fills down the active cell value across the selected failure mode range', () => {
+    render(<FmedaTable />);
+
+    const sourceCell = screen.getByText('100').closest('td');
+    expect(sourceCell).not.toBeNull();
+    fireEvent.mouseDown(sourceCell as HTMLTableCellElement);
+
+    const targetCell = screen.getByText('10').closest('td');
+    expect(targetCell).not.toBeNull();
+    fireEvent.mouseDown(targetCell as HTMLTableCellElement, { shiftKey: true });
+
+    fireEvent.keyDown(getGrid(), { key: 'd', ctrlKey: true });
+
+    const nodes = useFmedaStore.getState().nodes;
+
+    expect(nodes['fm-1'].fitRate).toBeCloseTo(10);
+    expect(nodes['fm-2'].fitRate).toBeCloseTo(10);
+    expect(nodes['fm-3'].fitRate).toBeCloseTo(10);
   });
 });
