@@ -1914,21 +1914,45 @@ export const FmedaTable: React.FC = () => {
     }
 
     const bounds = getSelectionBounds(selectionRange);
-    const sourceRow = visibleFailureModeRows[failureModeRowIndexById.get(activeCell.rowId) ?? -1];
-
-    if (!bounds || !sourceRow) {
+    if (!bounds) {
       return;
     }
 
-    const sourceValue = getCellClipboardValue(sourceRow.original, activeCell.columnId);
-    const patches = visibleFailureModeRows
-      .slice(bounds.rowStart, bounds.rowEnd + 1)
-      .filter((row) => row.original.id !== activeCell.rowId)
-      .map((row) => {
-        const updates = normalizeSpreadsheetValue(activeCell.columnId, sourceValue);
-        return updates ? { id: row.original.id, updates } : null;
-      })
-      .filter(Boolean) as Array<{ id: string; updates: Partial<FmedaNode> }>;
+    const sourceRow = visibleFailureModeRows[bounds.rowStart];
+    if (!sourceRow) {
+      return;
+    }
+
+    const patchMap = new Map<string, Partial<FmedaNode>>();
+
+    for (let c = bounds.columnStart; c <= bounds.columnEnd; c++) {
+      const columnId = visibleEditableColumnIds[c];
+      if (!columnId || !isEditableColumnId(columnId)) {
+        continue;
+      }
+
+      const sourceValue = getCellClipboardValue(sourceRow.original, columnId);
+      const updates = normalizeSpreadsheetValue(columnId, sourceValue);
+      
+      if (!updates) {
+        continue;
+      }
+
+      for (let r = bounds.rowStart; r <= bounds.rowEnd; r++) {
+        const targetRow = visibleFailureModeRows[r];
+        if (!targetRow || targetRow.original.id === sourceRow.original.id) {
+          continue;
+        }
+
+        const existingPatch = patchMap.get(targetRow.original.id) ?? {};
+        patchMap.set(targetRow.original.id, { ...existingPatch, ...updates });
+      }
+    }
+
+    const patches = Array.from(patchMap.entries()).map(([id, updates]) => ({
+      id,
+      updates,
+    }));
 
     if (patches.length === 0) {
       return;
@@ -1939,9 +1963,9 @@ export const FmedaTable: React.FC = () => {
   }, [
     activeCell,
     applyNodeUpdates,
-    failureModeRowIndexById,
     getSelectionBounds,
     selectionRange,
+    visibleEditableColumnIds,
     visibleFailureModeRows,
   ]);
 
